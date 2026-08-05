@@ -25,7 +25,15 @@ done < Tests/Fixtures/Codex/runtime-events-0.147.0.jsonl
 
 while IFS= read -r line; do
   jq -e . >/dev/null <<< "$line"
+done < Tests/Fixtures/Codex/terminal-failures-0.147.0.jsonl
+
+while IFS= read -r line; do
+  jq -e . >/dev/null <<< "$line"
 done < Tests/Fixtures/Claude/session-2.1.29.jsonl
+
+while IFS= read -r line; do
+  jq -e . >/dev/null <<< "$line"
+done < Tests/Fixtures/Claude/terminal-failures-2.1.29.jsonl
 
 if tail -n 1 Tests/Fixtures/Claude/session-partial-tail.jsonl | jq -e . >/dev/null 2>&1; then
   echo "The partial-tail fixture must end with deliberately truncated JSON." >&2

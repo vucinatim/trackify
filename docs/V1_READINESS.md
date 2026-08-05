@@ -92,7 +92,7 @@ This is the highest-priority implementation validation.
 
 - [x] Capture redacted completed turns.
 - [x] Capture an active lifecycle with unmatched `task_started` evidence.
-- [x] Observe an interrupted turn; explicit failed-turn fixture remains a release test.
+- [x] Capture explicit failed, aborted, interrupted, and error record variants.
 - [x] Verify session identity, timestamps, working directory, message roles, and lifecycle evidence for the observed version.
 - [x] Exclude internal report runs through ephemeral execution plus a defense-in-depth marker.
 
@@ -100,7 +100,7 @@ This is the highest-priority implementation validation.
 
 - [x] Capture a redacted completed `end_turn` session record.
 - [x] Capture active `tool_use` and a deliberately truncated final record.
-- [ ] Capture explicit interrupted and failed runs when available.
+- [x] Capture the explicit top-level Claude API-error variant; error-like nested content remains ordinary evidence rather than lifecycle state.
 - [x] Verify session identity, timestamps, working directory, message roles, and lifecycle evidence for Claude Code 2.1.29.
 - [x] Exclude internal report runs through `--no-session-persistence` plus a defense-in-depth marker.
 

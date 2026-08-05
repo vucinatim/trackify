@@ -242,8 +242,10 @@ Fixtures:
 ```text
 Tests/Fixtures/Codex/app-server-thread-read.v2.json
 Tests/Fixtures/Codex/runtime-events-0.147.0.jsonl
+Tests/Fixtures/Codex/terminal-failures-0.147.0.jsonl
 Tests/Fixtures/Claude/session-2.1.29.jsonl
 Tests/Fixtures/Claude/session-partial-tail.jsonl
+Tests/Fixtures/Claude/terminal-failures-2.1.29.jsonl
 ```
 
 Profiling and capture tools:
@@ -253,6 +255,7 @@ scripts/compatibility/profile-codex-app-server.mjs
 scripts/compatibility/profile-jsonl-cache.mjs
 scripts/compatibility/capture-codex-fixture.mjs
 scripts/compatibility/capture-jsonl-fixture.mjs
+scripts/compatibility/capture-terminal-fixture.mjs
 scripts/compatibility/sanitize-fixture.mjs
 ```
 
@@ -267,8 +270,8 @@ These tools output only structural profiles or sanitized fixtures. Raw cache fil
 - [x] Active Claude tool cycle using `tool_use`.
 - [x] Truncated Claude final record.
 - [x] Unknown and optional fields tolerated structurally.
-- [ ] Explicit failed Codex turn fixture.
-- [ ] Explicit failed Claude turn fixture.
+- [x] Explicit failed, aborted, interrupted, and error Codex record variants.
+- [x] Explicit top-level Claude API-error record variant. Error-like strings inside nested content are not treated as lifecycle evidence.
 - [ ] Cache truncation and replacement while the app is offline.
 - [ ] Same fixture suite on at least one coworker's Claude Code installation.
 
