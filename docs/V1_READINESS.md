@@ -202,7 +202,8 @@ Before making the repository the canonical public project:
 - [x] Add a clear privacy statement linking to [PRIVACY_SECURITY.md](./PRIVACY_SECURITY.md).
 - [x] Add sanitized fixtures and an automated privacy check that rejects personal paths and credential patterns.
 - [x] Enable GitHub secret scanning, push protection, and private vulnerability reporting.
-- [ ] Enable branch protection and required Swift checks after the initial foundation workflow lands on `main`.
+- [x] Protect `main`, require pull requests and the fixture-privacy check, enforce linear history and resolved conversations, and block force pushes and deletion.
+- [ ] Add required Swift build/test checks when the package is scaffolded.
 - [ ] Keep signing, notarization, and Sparkle private keys only in a protected release environment.
 - [ ] Define supported-version and security-reporting expectations.
 - [ ] Produce an SBOM with signed releases.
