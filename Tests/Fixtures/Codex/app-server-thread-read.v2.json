@@ -1,0 +1,112 @@
+{
+  "id": 3,
+  "result": {
+    "thread": {
+      "id": "01900000-0000-7000-8000-000000000001",
+      "extra": null,
+      "sessionId": "01900000-0000-7000-8000-000000000001",
+      "forkedFromId": null,
+      "parentThreadId": null,
+      "preview": "Synthetic fixture content.",
+      "ephemeral": false,
+      "section": null,
+      "historyMode": "legacy",
+      "modelProvider": "openai",
+      "createdAt": 1785834000,
+      "updatedAt": 1785834001,
+      "recencyAt": 1785834002,
+      "status": {
+        "type": "notLoaded"
+      },
+      "path": "/Users/example/Developer/Work/sample-repo/Sources/Example.swift",
+      "cwd": "/Users/example/Developer/Work/sample-repo/Sources/Example.swift",
+      "cliVersion": "unknown",
+      "source": "vscode",
+      "canAcceptDirectInput": null,
+      "threadSource": "user",
+      "agentNickname": null,
+      "agentRole": null,
+      "gitInfo": null,
+      "name": "<fixture:name>",
+      "turns": [
+        {
+          "id": "01900000-0000-7000-8000-000000000002",
+          "items": [
+            {
+              "type": "userMessage",
+              "id": "01900000-0000-7000-8000-000000000003",
+              "clientId": "01900000-0000-7000-8000-000000000004",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Synthetic fixture content.",
+                  "text_elements": []
+                }
+              ]
+            },
+            {
+              "type": "reasoning",
+              "id": "01900000-0000-7000-8000-000000000005",
+              "summary": [
+                "Synthetic fixture content.",
+                "Synthetic fixture content."
+              ],
+              "content": []
+            },
+            {
+              "type": "agentMessage",
+              "id": "01900000-0000-7000-8000-000000000006",
+              "text": "Synthetic fixture content.",
+              "phase": "final_answer",
+              "memoryCitation": null
+            }
+          ],
+          "itemsView": "full",
+          "status": "completed",
+          "error": null,
+          "startedAt": 1785834003,
+          "completedAt": 1785834004,
+          "durationMs": 37580
+        },
+        {
+          "id": "01900000-0000-7000-8000-000000000007",
+          "items": [
+            {
+              "type": "userMessage",
+              "id": "01900000-0000-7000-8000-000000000008",
+              "clientId": "01900000-0000-7000-8000-000000000009",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Synthetic fixture content.",
+                  "text_elements": []
+                }
+              ]
+            },
+            {
+              "type": "reasoning",
+              "id": "01900000-0000-7000-8000-000000000010",
+              "summary": [
+                "Synthetic fixture content."
+              ],
+              "content": []
+            },
+            {
+              "type": "agentMessage",
+              "id": "01900000-0000-7000-8000-000000000011",
+              "text": "Synthetic fixture content.",
+              "phase": "final_answer",
+              "memoryCitation": null
+            }
+          ],
+          "itemsView": "full",
+          "status": "completed",
+          "error": null,
+          "startedAt": 1785834005,
+          "completedAt": 1785834006,
+          "durationMs": 20872
+        }
+      ]
+    }
+  }
+}

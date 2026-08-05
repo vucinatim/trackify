@@ -1,0 +1,21 @@
+.DS_Store
+.build/
+.swiftpm/
+DerivedData/
+build/
+*.xcuserstate
+xcuserdata/
+*.ipa
+*.dSYM/
+*.dSYM.zip
+*.xcarchive/
+
+# Local runtime and fixture-capture scratch data
+tmp/
+artifacts/
+.env
+.env.*
+
+# Never commit local Trackify or provider data
+Trackify.sqlite*
+*.session.jsonl
