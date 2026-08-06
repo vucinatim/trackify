@@ -1,7 +1,7 @@
 # Trackify agent installation protocol V1
 
-Status: reserved; no release published
+Status: V1 protocol
 
-This versioned endpoint is reserved for Trackify's V1 installation protocol. The protocol will not become active until signed and notarized artifacts, the signed release manifest, bootstrap commands, and installation tests are published together.
+This versioned endpoint uses the same V1 trust boundary and steps as the [stable Trackify agent-installation endpoint](../). It remains stable for V1 installers even if the unversioned endpoint later advances.
 
-There is currently nothing to install from this endpoint.
+No installation is available until the stable release manifest and signature exist and agree with a signed, notarized GitHub Release. When absent, stop without changing the machine.

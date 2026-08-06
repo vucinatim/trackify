@@ -1,6 +1,6 @@
 # Trackify Updates and Release Delivery
 
-Status: Proposed
+Status: Sparkle app integration and feed location implemented; signed release publication pending
 Last updated: 2026-08-05
 
 ## 1. Purpose
@@ -151,7 +151,7 @@ The appcast points to immutable, versioned GitHub Release assets. Its public loc
 Trackify deliberately publishes two small metadata formats:
 
 - `appcast.xml` follows Sparkle's update protocol and is consumed by the running app.
-- `release-manifest.json` follows Trackify's installation protocol and is consumed by installer agents and `trackify repair`.
+- `release-manifest.json` follows Trackify's installation protocol and is consumed by installer agents and the narrow repair workflow.
 
 Both are generated from the same tag, version, build, checksums, minimum macOS version, release notes, and immutable asset URLs. Generation fails when these values disagree.
 
@@ -197,33 +197,39 @@ Release credentials exist only in the protected GitHub Actions release environme
 - Apple notarization credentials.
 - Sparkle EdDSA private key.
 
+The repository implements this as the manually dispatched, protected `Release` workflow. Its `release` environment must provide:
+
+```text
+DEVELOPER_ID_APPLICATION_P12_BASE64
+DEVELOPER_ID_APPLICATION_P12_PASSWORD
+DEVELOPER_ID_APPLICATION_IDENTITY
+RELEASE_KEYCHAIN_PASSWORD
+APPLE_NOTARY_ID
+APPLE_NOTARY_PASSWORD
+SPARKLE_EDDSA_PUBLIC_KEY
+SPARKLE_EDDSA_PRIVATE_KEY
+```
+
+The workflow validates tag/build input, reruns tests and privacy checks, builds Universal 2 with `direct` origin, signs nested Sparkle code and the app, notarizes and staples, verifies Team ID/Gatekeeper/architectures/version, generates the Sparkle appcast, signed manifest, checksums, DMG, and SwiftPM dependency SBOM, then publishes one immutable GitHub Release. GitHub Pages downloads release metadata only after publication. Missing credentials fail closed before publication.
+
 Pull-request workflows cannot read release credentials or publish artifacts to the stable feed. The Sparkle public key is compiled into the application. Key rotation requires a deliberately designed transition release.
 
 ## 8. Safe update lifecycle
 
 ### 8.1 Before replacement
 
-When the user chooses `Update & Relaunch`, Trackify:
+When the user chooses `Update & Relaunch`, Sparkle owns verified download, installation, application termination, and relaunch. Trackify's imports use short transactions and advance a source cursor only after durable writes; derived work is idempotent. An interrupted scan or report therefore leaves the last committed ledger valid and is repaired by normal reconciliation after relaunch. V1 does not add a second custom quiescence protocol around Sparkle.
 
-1. Prevents new collection, report, rebuild, and backfill jobs from starting.
-2. Lets short database transactions finish and cooperatively cancels long derived jobs.
-3. Persists source cursors and resumable job state.
-4. Checkpoints the SQLite write-ahead log.
-5. Closes application-owned database connections.
-6. Hands installation to Sparkle and quits when requested.
-
-The app does not wait for external Codex, Claude, build, or test processes to stop. Their later evidence is reconciled after relaunch.
+The app does not wait for external Codex, Claude, build, or test processes to stop. Their later durable cache and Git evidence is reconciled after relaunch. Provider processes also have a bounded deadline, and unfinished report generation never blocks ledger recovery.
 
 ### 8.2 After relaunch
 
 The new version:
 
-1. Opens configuration without starting collectors.
-2. Verifies the ledger and schema version.
-3. Creates a recoverable database backup when the pending migration is not trivially reversible.
-4. Runs migrations transactionally.
-5. Starts collection and resumes pending idempotent jobs.
-6. Records the successful application version and migration result.
+1. Opens the private ledger and verifies/migrates its schema before collection.
+2. Creates a recoverable database backup before applying any migration to an existing schema.
+3. Runs migrations transactionally.
+4. Starts normal idempotent collection and report catch-up only after the ledger opens successfully.
 
 Interrupted collection is expected and is repaired by normal reconciliation. Trackify must never create a silent empty ledger merely because opening or migrating the existing ledger failed.
 
@@ -249,7 +255,7 @@ The CLI ships inside `Trackify.app` and the user-scoped installation creates a s
 → ~/Applications/Trackify.app/Contents/SharedSupport/trackify
 ```
 
-Replacing the bundle therefore updates the app and CLI together. The link is validated after relaunch and repaired when missing. `trackify --version` reports the semantic version, build identifier, schema compatibility range, and installation origin.
+Replacing the bundle therefore updates the app and CLI together. The link is validated after relaunch and repaired when missing. `trackify --version` reports the semantic version; `trackify update status --json` adds build identifier, installation origin, channel, and update authority. Schema migrations remain visible through `trackify doctor --json`.
 
 A CLI binary that is already executing may finish using its loaded old executable. New invocations resolve to the new bundle. Long-running mutating CLI commands participate in the same database lease and graceful-shutdown contract as app jobs.
 
@@ -269,16 +275,17 @@ Representative status:
   "origin": "direct",
   "channel": "stable",
   "currentVersion": "1.1.3",
-  "availableVersion": "1.2.0",
-  "state": "available",
+  "build": "113",
+  "state": "idle",
   "installAction": "sparkle",
+  "instruction": "Open Trackify to install the signed update.",
   "requiresRelaunch": true
 }
 ```
 
 Agents may check status without confirmation. They may install when the user has asked them to update Trackify or when update permission is explicit in a broader repair request. They must not replace Homebrew or managed installations through the direct channel.
 
-If the GUI is running, CLI update commands ask the running application to perform the operation. If it is not running, the CLI launches the app with an update request rather than reimplementing bundle replacement. Installation is asynchronous across app termination and relaunch; the CLI returns a stable request identifier that an agent can inspect with `trackify update status --json`.
+For direct releases, CLI update commands open the registered `trackify://update/check` or `trackify://update/install` application request. The app presents Sparkle's verified update flow; the CLI never reimplements bundle replacement. Homebrew, managed, development, and direct bundles without a configured Sparkle key refuse this path and return their actual owner or disabled state. The local status command reports installed version, build, origin, authority, and instruction; detailed download/install progress remains in Sparkle's app-owned UI in V1.
 
 ## 11. Scheduling and network behavior
 

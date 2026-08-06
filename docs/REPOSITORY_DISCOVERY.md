@@ -1,6 +1,6 @@
 # Repository Discovery and Grouping
 
-Status: Proposed
+Status: Implemented for V1
 Last updated: 2026-08-05
 
 ## 1. Purpose
@@ -322,7 +322,7 @@ All commands support stable identifiers and query commands support `--json`.
 ## 13. Data and query behavior
 
 - Repository queries may scope by repository, working copy, discovery root, or relative path prefix.
-- Root totals aggregate repository evidence without double-counting shared or overlapping work intervals.
+- Root totals aggregate repository evidence without double-counting records shared across working copies.
 - Historical queries use location membership valid at the event time.
 - Current repository lists use the latest active location.
 - Missing working copies remain in history and are marked unavailable rather than deleted.

@@ -1,415 +1,177 @@
 # Trackify V1 UI Specification
 
-Status: Proposed
-Last updated: 2026-08-05
+Status: Implemented and visually validated
+Last updated: 2026-08-06
 
-The application icon and menu-bar template are defined in [BRAND.md](./BRAND.md).
+The application icon and menu-bar template are defined in [BRAND.md](./BRAND.md). Product scope is defined in [V1.md](./V1.md), and repository grouping is defined in [REPOSITORY_DISCOVERY.md](./REPOSITORY_DISCOVERY.md).
 
 ## 1. Purpose
 
-Trackify is primarily a passive observer. Its UI exists to make the ledger understandable at a glance and explorable when needed; it is not a workspace where users manually maintain tasks, timers, or reports.
+Trackify is a passive observer. Its UI makes the local work ledger understandable at a glance and explorable when needed; it is not a workspace for manually maintaining tasks, timers, or reports.
 
-This document specifies the V1 menu bar and main-window experience. Product scope is defined in [V1.md](./V1.md), and repository discovery behavior is defined in [REPOSITORY_DISCOVERY.md](./REPOSITORY_DISCOVERY.md).
+The native SwiftUI application has two surfaces:
+
+1. A compact menu-bar panel for the current day.
+2. A history-first main window with Overview, Activity, and Projects.
 
 ## 2. UI principles
 
-### Glance first
+### Evidence before estimates
 
-The menu bar should answer what is happening now, how today is progressing, and what the latest outcome was within a few seconds.
+Core numbers come from durable Git and conversation evidence. The UI says “evidence hours,” not “time worked,” and does not infer activity from keyboard, mouse, foreground-window, or machine-idle state.
+
+### Honest unfinished states
+
+In-progress, investigating, waiting, failed, quiet, and completed periods stay distinct. A working-tree change or active agent response never becomes a completed outcome merely because time passed.
 
 ### Observation over administration
 
-The application emphasizes timelines, reports, history, and search. Setup, exclusions, pause, refresh, and diagnostics are secondary controls.
-
-### Honest empty and unfinished states
-
-Inactive periods remain visible. Work in progress is not presented as completed. Missing or stale sources are shown without making the entire application feel broken.
+Activity, reports, history, projects, and search are primary. Setup, exclusions, provider configuration, diagnostics, pause, refresh, and updates remain secondary or agent/CLI-owned workflows.
 
 ### Dense but calm
 
-Trackify displays meaningful information without filling the interface with oversized metric cards. Statistics use compact rows, timelines, and native lists.
+The main window uses native sidebar navigation, restrained panels, semantic system colors, monospaced numeric values, and compact list/detail layouts. It is designed and validated at 1180×800 points while remaining usable down to 1040×700.
 
-### Progressive detail
+### Complete history without a giant sidebar
 
-The information hierarchy is:
+Repositories are grouped inside Projects by discovery root. The sidebar contains stable product sections rather than expanding 60-plus repositories.
 
-```text
-Menu bar glance
-→ Today timeline
-→ Hour/day detail
-→ Repository or session evidence
-```
+## 3. Menu-bar item and dropdown
 
-### Passive source grouping
-
-Repositories are automatically grouped by discovery root and folder hierarchy. The menu shows only repositories active today; the main repository view provides the complete catalog.
-
-### Guided initial setup
-
-When Trackify is installed by Codex or Claude, the installer agent presents one concise recommendation covering provider, primary repository groups, evidence import, and recent report generation. The native app displays the same prepared recommendation when installation is manual.
+The collapsed item shows today’s evidence hours and, when a baseline exists, the active-day comparison:
 
 ```text
-Recommended setup
-
-Work       ~/Developer/Work       38 repositories
-Personal   ~/Developer/Personal   24 repositories
-
-History    Import all available evidence
-Reports    Generate the last 14 days initially
-Provider   Claude · Opus · medium
-
-[Use recommended setup]     [Review]
+◉ 4h +18%      evidence recorded today
+○ 0h           no evidence recorded today
+Ⅱ 4h           collection paused
+! 4h           degraded collection requiring attention
 ```
 
-The UI does not display every repository during this decision. `Review` expands only the candidate roots, estimated report workload, and excluded or unassigned repository count.
+The dropdown answers four questions quickly:
 
-Application update behavior is specified in [UPDATES.md](./UPDATES.md).
+- Is collection healthy, paused, or degraded?
+- When was the latest concrete evidence observed?
+- What are today’s evidence hours, LLM turns, commits, files, lines, and repositories?
+- What does the latest stored report say, including whether it remains unfinished?
 
-## 3. Menu bar item
+The header uses a non-animated status capsule: Up to date, Syncing, Paused, or Needs attention. The hourly chart labels six-hour intervals so gaps retain time context and draws a thin red line at the current minute. Open Trackify and pause/resume remain immediately visible; an overflow menu contains Sync now, Settings, update check, and Quit. Report copy stays in the full Activity view. The dropdown never lists the full repository catalog or hides healthy historical data behind a collector warning.
 
-The collapsed item shows tracked work and current pace:
+## 4. Main application shell
+
+The native `NavigationSplitView` has three stable destinations:
 
 ```text
-┌─────────────────────────────────────────────────────────────┐
-│  Finder   File   Edit                         ◉ 4h12 ↑18%   │
-└─────────────────────────────────────────────────────────────┘
+WORK LEDGER
+  Overview
+  Activity
+  Projects
 ```
 
-States:
+Settings remains a separate native scene. The app defaults to 1180×800 and uses a 1040×700 minimum so list/detail views do not collapse into unusable layouts.
 
-```text
-◉ 4h12 ↑18%    tracking with current activity
-○ 4h12 ↑18%    tracking with no current activity
-Ⅱ 4h12         collection paused
-! 4h12         degraded collection requiring attention
-```
+The main window has no global refresh control: collection is automatic, and the explicit Sync now fallback remains in the menu-bar overflow and diagnostics surfaces.
 
-The precise symbols may use native iconography, but the state must not rely on color alone.
+Calendar selection, reports, and search remain first-class capabilities without becoming duplicate destinations. Date browsing lives in Overview; reports and search live in Activity.
 
-## 4. Menu bar dropdown
+## 5. Overview
 
-### 4.1 Active state
+Overview is the glanceable historical dashboard. It provides:
 
-```text
-┌──────────────────────────────────────────────────┐
-│ Trackify                              ● Tracking │
-├──────────────────────────────────────────────────┤
-│ NOW                                              │
-│                                                  │
-│ ● Codex · trackify                         18m   │
-│   Implementing Git repository discovery          │
-│                                                  │
-│ ◌ Tests · trackify                          3m   │
-│   Swift test suite running                       │
-├──────────────────────────────────────────────────┤
-│ TODAY · Wednesday, August 5                      │
-│                                                  │
-│  4h 12m work       3h 06m agents                │
-│  6 commits         24 files                     │
-│  +842  −317        3 repositories               │
-│                                                  │
-│  Pace  ↑18% compared with 14-day average         │
-│                                                  │
-│  08  09  10  11  12  13  14  15  16            │
-│  ▁   ▅   █   ▆   ·   ▂   ▇   ▅   ▃             │
-├──────────────────────────────────────────────────┤
-│ LATEST · 15:00–16:00              IN PROGRESS   │
-│                                                  │
-│ Continued implementing repository discovery.    │
-│ The scanner is working, but tests are still      │
-│ running and the changes remain uncommitted.      │
-│                                                  │
-│ trackify · 7 files · +184 −32                    │
-│                                                  │
-│ [ Copy report ]                 [ Open Trackify ]│
-├──────────────────────────────────────────────────┤
-│ Updated 11 seconds ago                       ↻ ⚙ │
-└──────────────────────────────────────────────────┘
-```
+- Today, 7-day, and 30-day range selection.
+- Evidence hours, LLM turns, commits, and committed-line totals.
+- Per-active-day context rather than a synthetic productivity score.
+- An adaptive trend chart: Day shows 24 hourly evidence-record bars, while 7-day and 30-day ranges show daily evidence hours.
+- Native pointer hover on every trend point, showing its period, evidence or evidence hours, LLM turns, commits, committed lines, and repository count.
+- A compact clickable six-week evidence heatmap that preserves quiet days and immediately reveals date, evidence hours, turns, and commits on hover without changing layout height. Today uses a pink marker; the selected date uses a pale-blue outline.
+- Recent stored reports with state badges and copy actions.
+- Project focus measured as active days in the selected range.
 
-### 4.2 No current activity
+The selected date is always visible in the header. Today receives an explicit label and marker; selecting a heatmap cell opens that day, and a compact label-free graphical date-picker popover plus previous/next controls support direct historical navigation.
 
-The `NOW` section becomes quiet without implying that the day contained no work:
+All totals and trend points use shared `ActivityQueries` snapshots. Historical Day selection loads the selected date's 24 hourly snapshots on demand; it never approximates an hourly shape from a daily total. Report copy and project focus are supplemental views over the same ledger, not alternate tracking systems.
 
-```text
-│ NOW                                              │
-│                                                  │
-│ ○ No project activity detected                   │
-│   Last activity 28 minutes ago in trackify       │
-```
+## 6. Activity
 
-### 4.3 No activity today
+Activity combines interpretation with concrete evidence in reverse chronological order. Entries are grouped by day and use a continuous visual rail. Day labels remain sticky using a solid detail-pane surface and inset separator rather than toolbar material. Rows are constructed lazily, repository/report lookups are precomputed, and long conversation text is bounded only for display while full text remains searchable and available through the CLI. Search and type filtering are inline, so finding a report, commit, conversation, repository, or change does not require leaving the ledger.
 
-```text
-│ TODAY · Wednesday, August 5                      │
-│                                                  │
-│ No project activity detected today.              │
-│ Collection is operating normally.                │
-```
+Activity and Projects share one neutral native search-field treatment with an explicit search icon and clear action. Project navigation uses the normal window surface rather than a separate sidebar material, so repository scale does not create a visually nested second application sidebar.
 
-### 4.4 Degraded collection
+V1 entry types are:
 
-Failures appear as a compact status row rather than replacing healthy data:
+- Reports, including evidence counts and report state.
+- Commits, including committed additions, deletions, and file counts when available.
+- User prompts and assistant updates associated with a repository. User prompts use a person icon, blue treatment, and the explicit label `You`; assistant responses use a purple sparkle and the label `Agent`.
+- Working-tree changes, including explicit uncommitted/in-progress state.
+- Test outcomes, including failures that need attention.
 
-```text
-│ ⚠ Claude history has not updated for 3 hours     │
-│   Git and Codex collection are operating normally│
-```
+The All, Reports, Commits, Conversations, and Changes filters are local view filters. Conversations includes both user intent and assistant progress in chronological context. Search recognizes role terms such as user, prompt, request, agent, assistant, and response. The store supplies a bounded newest-first event query so the app never loads the entire ledger merely to render history.
 
-Selecting the row opens Diagnostics with the affected source selected.
+### Reports in Activity
 
-### 4.5 Dropdown behavior
+Reports appear as visually distinct cards in chronological context, rather than duplicating the same history in a separate browser. Each card provides:
 
-- The `NOW` section shows all active recognized runs, ordered by start time.
-- Selecting a run opens its session or evidence detail.
-- Selecting an hour in the mini timeline opens Today with that hour selected.
-- The latest report is the latest closed or meaningfully provisional period.
-- `Copy report` copies plain text suitable for a status update or timesheet.
-- Refresh triggers idempotent reconciliation rather than clearing or rebuilding history.
-- Settings and diagnostics remain secondary icon actions.
-- The dropdown does not contain repository filters, full charts, or a complete repository list.
+- Report date and exact hourly or daily period.
+- Completed, in-progress, investigating, waiting, observed, or no-activity state.
+- Evidence count, provider, model, and copy action.
+- Full summary alongside the concrete commits, messages, tests, and unfinished states around it.
 
-### 4.6 Update available
+Report generation treats a user message as intent, an assistant message as a progress claim or implementation context, and commits, tests, working-tree changes, and final period state as concrete outcome evidence. A report pairs requests and outcomes only when their session or repository association supports the relationship, so parallel projects cannot be blended into a fabricated narrative. Unfinished or investigating evidence takes precedence over unrelated completed commits, and an assistant completion claim is never sufficient proof by itself.
 
-An available direct-install update adds one row above the normal footer without replacing activity or report content:
+Reports are read-only in V1. Regeneration and evidence inspection remain stable CLI operations.
 
-```text
-├──────────────────────────────────────────────────┤
-│ ↑ Trackify 1.2.0 is available                    │
-│   Adapter compatibility and reporting fixes      │
-│                                                  │
-│ [ Later ]                    [ Update & Relaunch ]│
-├──────────────────────────────────────────────────┤
-│ Updated 11 seconds ago                       ↻ ⚙ │
-└──────────────────────────────────────────────────┘
-```
+### Search in Activity
 
-Download progress remains in this row. Installation pauses Trackify's own jobs safely, relaunches the app, and resumes collection through normal reconciliation. Homebrew- and organization-managed installations show their owning update action instead of `Update & Relaunch`.
+The visible Activity search field filters report summaries, commit messages and hashes, repository names, paths, and normalized Codex or Claude messages. Results retain their type, timestamp, repository association, and stable record identity. Advanced filters and semantic/vector search are deferred.
 
-The Settings update section shows the current and available version, stable channel, concise release notes, automatic-check preference, optional automatic download, and the correct action for the recorded installation origin.
+## 7. Projects
 
-## 5. Main application shell
+Projects automatically groups every repository by configured discovery root, such as Work and Personal. Its list/detail layout remains usable with more than 60 repositories.
 
-The application uses a native sidebar, content area, and optional contextual inspector.
+The list exposes repository name and root-relative path. The detail view exposes:
 
-Primary navigation:
+- Discovery group, branch, canonical path, and latest observation.
+- Counts from the bounded recent ledger window.
+- Separate recent user-prompt and agent-update counts, plus commits, working-tree states, and tests associated with the repository.
 
-```text
-Today
-Calendar
+No repository-by-repository setup is required. Agents recommend a small number of primary roots during installation; passive discovery owns the catalog afterward.
 
-Repositories
-  grouped recent repositories
+## 8. Guided setup and updates
 
-History
-  Search
-  Reports
+The installer agent presents one bounded recommendation covering:
 
-System
-  Sources
-  Diagnostics
-```
+- Codex or Claude report provider and inexpensive default model.
+- Primary Work and Personal discovery roots.
+- Available evidence backfill.
+- A maximum initial report-generation range.
 
-The sidebar shows only recently active repositories beneath their automatic root groups. `View all…` opens the repository catalog.
+The app itself remains passive. Signed direct installations use Sparkle’s standard update UI and GitHub-hosted release artifacts. Homebrew, managed, and development installations defer to their recorded update owner.
 
-## 6. Today view
+## 9. Visual validation contract
 
-```text
-┌────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ ● Trackify                                     Today · Aug 5                  ● Tracking    ⌕  ⚙   │
-├───────────────────┬──────────────────────────────────────────────────────────────┬─────────────────┤
-│                   │ TODAY                                                        │ CURRENT         │
-│ ● Today           │                                                             │                 │
-│   Calendar        │  4h 12m tracked    3h 06m agents    6 commits    ↑18% pace  │ ● Codex   18m  │
-│                   │  +842 −317 lines   24 files          3 repositories          │   trackify      │
-│ REPOSITORIES      │                                                             │                 │
-│ ▾ Work            ├─────────────────────────────────────────────────────────────┤ Implementing    │
-│     client-api    │ ACTIVITY TIMELINE                                           │ repository      │
-│     internal-tools│                                                             │ discovery       │
-│ ▾ Personal        │        08   09   10   11   12   13   14   15   16           │                 │
-│     trackify      │ Work    ░░   ██   ██   ██        ░░   ██   ██   ▒▒           │ ◌ Tests    3m  │
-│     View all…     │ Codex        ├───────────┤             ├─────────────►       │   trackify      │
-│                   │ Claude                 ├──────┤                            │                 │
-│ HISTORY           │ Builds                      ├─┤              ├──────►       ├─────────────────┤
-│   Search          │ Commits          ◆       ◆                 ◆    ◆ ◆         │ OPEN WORK      │
-│   Reports         │                                                             │                 │
-│                   │                 Selected: 15:00–16:00                       │ Repository      │
-│ SYSTEM            ├─────────────────────────────────────────────────────────────┤ discovery      │
-│   Sources         │ HOURLY REPORTS                                              │                 │
-│   Diagnostics     │                                                             │ Started 09:14  │
-│                   │ 15:00–16:00  IN PROGRESS                     trackify       │ Last 16:22     │
-│                   │ Continued implementing repository discovery. The scanner    │                 │
-│                   │ is working, but tests remain active and the changes are      │ 3 sessions     │
-│                   │ uncommitted.                                  +184 −32       │ 9 files        │
-│                   │                                                             │ 2 commits      │
-│                   │ 14:00–15:00  COMPLETED                       client-api      │                 │
-│                   │ Fixed token refresh handling and added regression tests.     │ In progress    │
-│                   │ Commit 92fc81a created.                        +96 −41        │                 │
-│                   │                                                             │ [View episode] │
-│                   │ 13:00–14:00  NO ACTIVITY                                    │                 │
-│                   │                                                             │                 │
-│                   │ 12:00–13:00  INVESTIGATING                   client-api      │                 │
-│                   │ Investigated intermittent authentication failures. No        │                 │
-│                   │ confirmed resolution was reached during this hour.           │                 │
-└───────────────────┴──────────────────────────────────────────────────────────────┴─────────────────┘
-```
+`scripts/validate-ui.sh` creates isolated populated and empty ledgers, fixes the application clock, disables collection/login-item side effects, and captures deterministic native screenshots for:
 
-### Today interactions
+- Overview
+- Activity
+- Projects
+- Activity in a tall window
+- Empty Overview
+- Empty Activity
 
-- Selecting an hour filters the visible report and evidence while keeping the full timeline visible.
-- Selecting an agent run opens its session detail.
-- Selecting a commit opens its repository and commit evidence.
-- The inspector shows current runs and derived open work episodes.
-- The inspector collapses when the window is narrow.
-- No editable tasks or manual timers appear.
+The showcase contains multiple discovery roots, parallel projects, quiet days, commits, Codex and Claude conversations, tests, completed reports, investigating reports, and explicitly unfinished work. It is ingested through the production collection/store path rather than a view-only mock.
 
-## 7. Calendar view
+The harness also rejects missing windows and screenshots below the minimum expected dimensions. Screenshots remain local build artifacts under `.build/ui-validation` by default.
 
-```text
-┌────────────────────────────────────────────────────────────────────────────────────────────────────┐
-│ ● Trackify                                  Calendar · August 2026              ● Tracking    ⌕  ⚙ │
-├───────────────────┬───────────────────────────────────────────────────────────┬────────────────────┤
-│                   │  ‹ July             AUGUST 2026             September ›   │ WEDNESDAY, AUG 5   │
-│   Today           │                                                           │                    │
-│ ● Calendar        │   Mon      Tue      Wed      Thu      Fri      Sat   Sun   │ 4h 12m tracked     │
-│                   │                                                           │ 3h 06m agents      │
-│ REPOSITORIES      │                                      01 ·     02 ·        │ 6 commits          │
-│ ▾ Work            │                                                           │ +842 −317          │
-│ ▾ Personal        │   03 ▂     04 ▆    [05 █]    06 ▅     07 ▃    08 ·  09 ·  │                    │
-│                   │                                                           │ ↑18% vs average    │
-│ HISTORY           │   10 ▇     11 █     12 ▅      13 ▂     14 ·    15 ·  16 ·  ├────────────────────┤
-│   Search          │                                                           │ SUMMARY            │
-│   Reports         │   17 ▄     18 ▆     19 █      20 ▆     21 ▃    22 ·  23 ·  │                    │
-│                   │                                                           │ Worked primarily   │
-│ SYSTEM            │   24 ·     25 ·     26 ·      27 ·     28 ·    29 ·  30 ·  │ on Trackify’s      │
-│   Sources         │                                                           │ repository scanner │
-│   Diagnostics     │   31 ·                                                    │ and authentication │
-│                   │                                                           │ fixes in client-   │
-│                   │   · none   ▂ light   ▅ typical   █ high                   │ api. Repository    │
-│                   │                                                           │ discovery remains  │
-│                   ├───────────────────────────────────────────────────────────┤ in progress.       │
-│                   │ SELECTED DAY                                              │                    │
-│                   │                                                           │ [Copy summary]     │
-│                   │ 08  09  10  11  12  13  14  15  16                       │ [Open day]         │
-│                   │ ▁   ▅   █   ▆   ·   ▂   ▇   ▅   ▃                        │                    │
-│                   │                                                           │                    │
-│                   │ trackify       2h 38m   3 commits   +514 −181             │                    │
-│                   │ client-api     1h 21m   3 commits   +328 −136             │                    │
-│                   │ website          13m    0 commits      files inspected     │                    │
-└───────────────────┴───────────────────────────────────────────────────────────┴────────────────────┘
-```
+## 10. V1 acceptance criteria
 
-Calendar intensity reflects tracked work time relative to the user's recent active-day distribution. It is a navigation aid, not a quality score.
-
-## 8. Repository catalog
-
-The catalog handles machines with dozens or hundreds of repositories without filling the sidebar.
-
-```text
-┌──────────────────────────────────────────────────────────────────────────┐
-│ Repositories                                                Search ⌕    │
-├──────────────────────────────────────────────────────────────────────────┤
-│ ▾ Work · 38 repositories                                              │
-│   client-api          1h 21m today    3 commits    ● active             │
-│   internal-tools      42m today       1 commit                          │
-│   website             13m today       —                                 │
-│   clients/client-a    Last active Aug 4                                 │
-│                                                                          │
-│ ▾ Personal · 24 repositories                                          │
-│   trackify           2h 38m today     3 commits    ● active             │
-│   finance-tool       Last active Aug 2                                  │
-│   experiments/demo   Last active Jul 29                                 │
-│                                                                          │
-│ ▸ Other · 3 repositories                                               │
-└──────────────────────────────────────────────────────────────────────────┘
-```
-
-Behavior:
-
-- Root groups are sorted by configured order.
-- Active repositories appear first within a group, followed by recent activity.
-- Search matches repository names, aliases, and relative paths.
-- Folder paths remain visible when needed to distinguish repositories with similar names.
-- Chains of single-child folders are visually collapsed.
-- Selecting a repository opens its timeline, reports, commits, files, sessions, and working-copy locations.
-
-## 9. Day detail
-
-The Day view is the full evidence-backed story for one date:
-
-```text
-09:00–10:00  IN PROGRESS
-Started repository discovery and added the initial scanner.
-trackify · 5 files · +143 −12 · Codex session 8f2…
-
-10:00–11:00  IN PROGRESS
-Separated Git inspection from filesystem discovery. Tests had
-not been completed and the working tree remained dirty.
-trackify · 7 files · +184 −32
-
-11:00–12:00  COMPLETED
-Finished the scanner, added tests, and created commit e815ba2.
-trackify · 1 commit · +92 −21
-
-12:00–13:00  NO ACTIVITY
-```
-
-Evidence rows expand on demand. Raw session messages or file lists are not shown by default.
-
-## 10. Search
-
-Search is global and passive:
-
-```text
-Search: repository discovery
-
-REPORTS
-Aug 5, 15:00 · trackify
-Continued implementing repository discovery…
-
-SESSIONS
-Aug 5, 09:12 · Codex · trackify
-“Implement Git repository discovery…”
-
-COMMITS
-Aug 5, 11:47 · e815ba2 · trackify
-Add recursive repository scanner
-
-FILES
-Sources/TrackifyEngine/RepositoryDiscovery.swift
-```
-
-Filters for date, source, repository, and record type are available in the toolbar. There is no semantic search in V1.
-
-## 11. Visual state vocabulary
-
-States should use consistent native labels and icons:
-
-```text
-● Active
-◐ In progress
-✓ Completed
-? Investigating
-◌ Waiting
-· No activity
-⚠ Degraded
-Ⅱ Paused
-```
-
-Actual colors should follow macOS accessibility and appearance settings. Text and icon shape must carry the meaning when color is unavailable.
-
-## 12. V1 UI acceptance criteria
-
-1. The dropdown communicates current activity, today's core statistics, and the latest report without opening the main window.
-2. No-activity and degraded-source states remain understandable and honest.
-3. Machines with more than 60 repositories do not produce an unusable menu or sidebar.
-4. Only recently active repositories appear directly in the sidebar.
-5. The complete repository catalog is searchable and grouped by discovery root.
-6. Today shows overlapping agent and work activity without double-counting wall-clock time.
-7. Calendar navigation exposes inactive days as well as active days.
-8. Hourly reports clearly distinguish unfinished, completed, investigating, waiting, and inactive periods.
-9. Report and evidence details are progressively disclosed rather than permanently filling the interface.
-10. Normal operation requires no manual timer, task, or report maintenance.
-11. Guided setup presents one bounded recommendation instead of requiring repository-by-repository configuration.
-12. An available direct-install update is visible without obscuring today's work and can be applied with one `Update & Relaunch` action.
-13. Update progress, failure, and recovery states are available in Settings and through the same underlying service as the CLI.
+1. The dropdown communicates current evidence, health, and latest report without opening the main window.
+2. Core statistics never depend on machine-idle or foreground-window inference.
+3. Unfinished and quiet periods remain explicit.
+4. Overview compares simple totals across today, 7 days, and 30 days without a synthetic score.
+5. Activity keeps reports and concrete evidence distinguishable but contextual.
+6. Reports support practical history browsing, filtering, detail, and copy without duplicating Activity.
+7. More than 60 repositories do not produce an unusable sidebar.
+8. Repositories are grouped by discovery root and expose their associated recent evidence.
+9. Overview makes today and the selected historical day obvious while keeping calendar navigation compact.
+10. Activity search has a centered native empty state and searches every documented ledger record kind.
+11. Normal operation requires no manual timer, task, or report maintenance.
+12. The deterministic visual harness captures all three primary screens plus tall-window and empty-state variants.

@@ -27,6 +27,13 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions/configure-pages@v6
+      - name: Use metadata from the latest signed release when available
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download --repo "$GITHUB_REPOSITORY" --pattern appcast.xml --dir site --clobber || true
+          gh release download --repo "$GITHUB_REPOSITORY" --pattern 'release-manifest.json*' --dir site --clobber || true
+          gh release download --repo "$GITHUB_REPOSITORY" --pattern release-public-key.txt --dir site --clobber || true
       - uses: actions/upload-pages-artifact@v5
         with:
           path: site

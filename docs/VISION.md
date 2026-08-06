@@ -1,6 +1,8 @@
 # Trackify Vision
 
-The implementation-facing release scope is defined in [V1.md](./V1.md), and the full technical design is defined in [DESIGN.md](./DESIGN.md).
+The implementation-facing first-release scope is defined in [V1.md](./V1.md),
+the next work-intelligence milestone is planned in [GOAL_2.md](./GOAL_2.md), and
+the full technical design is defined in [DESIGN.md](./DESIGN.md).
 
 ## The idea
 
@@ -10,7 +12,7 @@ It continuously observes the work already happening across local Git repositorie
 
 Trackify should make it effortless to answer:
 
-> What did I work on, what changed, how long was meaningful work happening, and where did I leave things?
+> What did I work on, what changed, when was evidence observed, and where did I leave things?
 
 The goal is not to supervise the user, judge whether a day was good, or invent a scientific definition of productivity. The goal is to create a useful and honest memory of development work.
 
@@ -33,7 +35,7 @@ Trackify closes these gaps by preserving a local ledger of evidence and deriving
 
 Trackify will provide:
 
-1. **A live view of today** — current work, tracked time, agent runtime, repositories, commits, changed lines, and recent outcomes.
+1. **A current view of today** — observed hours, LLM turns, repositories, commits, changed lines, and recent outcomes.
 2. **An honest historical record** — completed work, work still in progress, investigations, waiting periods, and periods with no detected activity.
 3. **Short verbal reports** — concise hourly and daily summaries based on observable evidence rather than generic activity claims.
 4. **Simple comparisons** — today and each metric compared with a recent moving average, without an opaque productivity formula.
@@ -60,9 +62,9 @@ That command should explain recent work, current unfinished state, important out
 
 Imported evidence and normalized events are the durable record. Statistics, intervals, rollups, and language-model reports are derived views that can be recalculated as the product improves.
 
-### Project activity is not physical activity
+### Historical evidence does not pretend to be a timer
 
-Keyboard and mouse idleness must not end a work session while an AI agent, build, test suite, or other meaningful project process is still running. Trackify measures detected project activity, not physical presence at the computer.
+Git and conversation histories record points and completed exchanges, not trustworthy human work duration. Trackify therefore reports when durable evidence was observed instead of turning gaps, file timestamps, or machine idleness into invented time. Optional hooks may improve a live view, but they are never required for historical correctness.
 
 ### Be honest about unfinished work
 
@@ -70,7 +72,7 @@ Activity does not imply completion. Trackify should say that work was started, c
 
 ### Keep the statistics simple
 
-Trackify should expose intuitive facts: tracked work time, agent runtime, commits, files, lines changed, repositories, sessions, and focus periods. Each metric can be compared with a moving average. A mysterious composite productivity score is not part of the core vision.
+Trackify should expose intuitive facts: clock hours containing evidence, LLM turns, conversation messages, commits, files, lines changed, repositories, and observed windows. Each metric can be compared with a moving average. A mysterious composite productivity score is not part of the core vision.
 
 ### The CLI and GUI are equal clients
 
@@ -100,7 +102,7 @@ Trackify is not intended to be:
 - A system that treats lines of code or commit counts as intrinsically good.
 - A manual timer that requires the user to remember to start and stop every task.
 
-Integrations with systems such as Clockify may export Trackify's reports and time intervals later, but Trackify itself remains the evidence-backed development ledger.
+Integrations with systems such as Clockify may export reports or explicitly user-approved estimates later, but Trackify itself remains the evidence-backed development ledger rather than a silent timesheet.
 
 ## Initial scope
 
@@ -112,7 +114,7 @@ The first useful version should:
 - Generate reports through either an authenticated Codex CLI or Claude Code CLI.
 - Backfill real historical evidence from repositories and conversation caches.
 - Record normalized activity in a local SQLite ledger.
-- Derive tracked work time and agent runtime without relying on machine idleness.
+- Derive active evidence hours and observed windows from durable timestamps without claiming elapsed work duration.
 - Produce hourly and daily statistics.
 - Generate concise reports that distinguish completed, in-progress, investigating, waiting, and inactive periods.
 - Show live daily totals, a timeline, and recent reports.

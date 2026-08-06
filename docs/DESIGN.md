@@ -1,7 +1,7 @@
 # Trackify System Design
 
-Status: Proposed
-Last updated: 2026-08-05
+Status: V1 implemented architecture
+Last updated: 2026-08-06
 
 ## 1. Purpose
 
@@ -58,19 +58,18 @@ The menu bar is the primary daily interface. It should answer:
 The collapsed menu bar item should remain compact. A representative format is:
 
 ```text
-Today  ·  4h 12m  ·  6 commits  ·  ↑18%
+Today  ·  4 active h  ·  6 commits  ·  ↑18%
 ```
 
 The popover should contain:
 
 ```text
-NOW
-Codex working in trackify                              18m
-Implementing Git repository discovery
+LATEST EVIDENCE
+Codex message in trackify                     8m ago
 
 TODAY
-Tracked work       4h 12m       ↑18%
-Agent runtime      3h 06m
+Active hours       4             ↑18%
+LLM turns          7
 Commits            6
 Lines changed      +842 / −317
 Files              24
@@ -83,86 +82,48 @@ LATEST
 Continued implementing repository discovery. The scanner
 remained uncommitted and in progress.
 
-[Copy today]                              [Open Trackify]
+[Open Trackify]                              [Pause] [More]
 ```
 
 The popover also needs lightweight controls:
 
-- Copy the latest hourly report.
-- Copy today's report.
 - Open the main window.
-- Trigger a refresh.
 - Pause or resume collection.
-- Open settings and diagnostics.
+- Open one overflow menu for Sync now, Settings, update check, and Quit.
 
-If multiple agents run concurrently, the `NOW` section lists each active run. The daily tracked-work total remains bounded by wall-clock time, while agent runtime may exceed it.
+Collection state is a calm colored capsule rather than an indeterminate spinner. The hourly chart labels six-hour intervals. Report copy remains available in the full Activity ledger, where the surrounding evidence is visible.
+
+Optional hooks may add a separate live indicator for recognized agents. That indicator is telemetry only: it does not change active hours, historical comparisons, or whether a report period contains core evidence.
 
 ### 4.2 Main application
 
-The main window contains five primary destinations.
+The main window contains three primary destinations. Capabilities are grouped by user intent so reports, calendar selection, and search do not duplicate the chronological ledger.
 
-#### Today
+#### Overview
 
-- Current agent, build, and repository activity.
-- Live totals and moving-average comparisons.
-- Hour-by-hour activity visualization.
-- Hourly verbal reports.
-- Commits, files, repositories, and sessions involved.
-- Clear indication of open or unfinished work.
+- Evidence-backed totals for today, 7 days, and 30 days.
+- Moving-average context, daily trend, and a clickable six-week heatmap.
+- Explicit selected date with current-day marker and direct date navigation.
+- Reports and repository focus for the selected period.
 
-#### Calendar
+#### Activity
 
-- Month and year navigation.
-- Day intensity based primarily on tracked work time.
-- Optional compact indicators for commits or agent activity.
-- Selection of any day to open its detailed history.
-- Empty days remain visually empty rather than being omitted.
+- Reverse-chronological reports, commits, conversations, working-tree changes, and test outcomes.
+- Inline search and type filters over one bounded ledger query.
+- Visually distinct report cards with state, evidence count, provider metadata, and copy action.
+- Concrete evidence remains visible around narrative interpretation.
 
-#### Day detail
-
-Each hour is shown with its detected state, statistics, report, and evidence links.
-
-```text
-09:00–10:00  In progress
-Started repository discovery and added the initial scanner.
-
-10:00–11:00  In progress
-Separated Git inspection from filesystem discovery. Tests had
-not been completed and the working tree remained dirty.
-
-11:00–12:00  Completed
-Finished the scanner, added tests, and created commit e815ba2.
-
-12:00–13:00  No activity
-```
-
-#### Repositories
+#### Projects
 
 - Discovered and configured repositories.
-- Recent work and latest known state.
-- Tracked time, commits, changed lines, files, and sessions by period.
-- Search and timeline scoped to one repository.
-- Inclusion, exclusion, aliasing, and project grouping controls.
-
-#### Search
-
-- Search across reports, commit messages, file paths, and imported session messages.
-- Filter by repository, source, date range, and record type.
-- Open the underlying evidence from any result.
-- Full-text search first; semantic search is a future option.
+- Latest known working-copy location and observation time.
+- Deterministic grouping by configured discovery root and relative folder path.
+- Complete scrollable catalog kept outside the compact menu and sidebar.
+- Repository-scoped history remains available through shared CLI context and timeline queries.
 
 ### 4.3 Settings
 
-Settings should remain focused:
-
-- Repository roots and excluded paths.
-- Root display labels used for automatic path-based grouping.
-- Enabled conversation sources.
-- Codex and Claude report-provider selection, model profile, and health.
-- Moving-average window, initially defaulting to 14 active days.
-- Workday timezone and optional day boundary.
-- Report generation schedule.
-- Data location, export, and deletion.
+Settings remains an observational native surface: launch at login, pause/resume, provider health, automatic-update preference, installation origin, update check, and configured roots. Agent-driven bootstrap and the CLI own roots, provider selection, backfill, private export, report deletion, and detailed diagnostics so V1 has one mutation path rather than parallel app and CLI forms.
 - Source and collector health.
 
 ## 5. CLI design
@@ -178,42 +139,36 @@ trackify day 2026-08-05
 trackify timeline --since 7d
 trackify search "repository discovery"
 trackify context --repo current --since 14d
+trackify context --today --all --max-characters 12000
 trackify repos
-trackify sessions --today
+trackify sessions
 trackify report --today
 trackify providers list
 trackify providers status
 trackify providers use <codex|claude>
-trackify providers test [codex|claude]
 trackify collect
-trackify backfill plan --evidence all --reports 14d
 trackify backfill --from 2026-08-03 --to 2026-08-05
-trackify rebuild --from 2026-08-03 --to 2026-08-05
 trackify doctor
 trackify bootstrap inspect --json
 trackify bootstrap apply --provider auto --backfill-evidence all --backfill-reports 14d --launch
-trackify repair
-trackify update status
-trackify update check
-trackify update install --relaunch
 ```
 
 Supporting inspection commands:
 
 ```bash
-trackify show report <id>
-trackify show session <id>
+trackify show report <id> [--evidence-limit <count>]
+trackify show session <id> [--message-limit <count>]
 trackify show commit <id>
 ```
 
 Likely later commands:
 
 ```bash
-trackify export --from 2026-08-01 --to 2026-08-31 --format jsonl
+trackify data export ~/Desktop/trackify-ledger.sqlite
 trackify report --from 2026-08-01 --to 2026-08-05 --copy
 trackify config get
 trackify config set <key> <value>
-trackify simulate --scenario two-day-development --speed instant
+trackify simulate --scenario foundation --speed instant --days 2
 ```
 
 ### 5.2 Agent-oriented context
@@ -224,7 +179,7 @@ trackify simulate --scenario two-day-development --speed instant
 trackify context \
   --repo current \
   --since 14d \
-  --max-tokens 3000
+  --max-characters 12000
 ```
 
 Representative output:
@@ -245,11 +200,11 @@ Current state:
 - Storage implementation appears unfinished
 ```
 
-The default context output favors derived reports and recent repository state. Flags may add raw evidence:
+The default context output favors current repository state, recent commits, and bounded user/assistant evidence. A daily portfolio query gives an agent one useful ledger without requiring it to discover and join every project itself:
 
 ```bash
-trackify context --include-commits --include-sessions
-trackify context --include-files --json
+trackify context --today --all --max-characters 12000
+trackify context --today --all --max-characters 12000 --json
 ```
 
 ### 5.3 Output contract
@@ -257,11 +212,13 @@ trackify context --include-files --json
 - Human-readable output is the default.
 - Every read/query command supports `--json`.
 - JSON output uses versioned, documented structures.
+- The full encoded context JSON, including its envelope and trailing newline, stays within `--max-characters`; it does not duplicate the rendered context as an unbounded object graph.
 - Output contains stable record identifiers for follow-up queries.
 - Commands do not emit ANSI formatting when output is redirected.
 - Diagnostics go to standard error; requested data goes to standard output.
 - Exit codes distinguish success, invalid usage, unavailable data, collection errors, and internal failures.
 - Repository-scoped commands infer the repository from the current directory when `--repo current` is used.
+- Session inspection selects the latest bounded tail and orders it chronologically. Report inspection returns evidence counts but includes evidence identifiers only up to an explicit limit.
 
 ## 6. Architecture
 
@@ -273,6 +230,8 @@ The initial version uses two executables and one shared library architecture:
 flowchart TD
     A["Trackify.app"] --> U["Shared application use cases"]
     B["trackify CLI"] --> U
+    H["Codex and Claude hooks"] --> I["Private event inbox"]
+    I --> E["Collection engine"]
     U --> S["SQLite ledger"]
 
     A --> C["Continuous collection scheduler"]
@@ -293,15 +252,7 @@ A separate helper or daemon is deliberately deferred. If the application later n
 
 #### Local app control
 
-Read-only CLI queries use shared store code directly. Commands that control the running application use a small versioned Unix-domain socket at:
-
-```text
-~/Library/Application Support/Trackify/Runtime/control.sock
-```
-
-The socket is owned by the menu-bar process, lives beneath a mode-`0700` directory, and is available only to the current user. It carries bounded versioned request/response envelopes for pause, resume, refresh, update, scheduler state, and graceful shutdown. The handler calls shared application use cases; it does not contain business logic.
-
-When the app is absent, an app-owned operation launches it before connecting. A one-shot CLI collection may run without the app only after acquiring the same database collection lease. This preserves one continuous scheduler owner without introducing a daemon.
+V1 deliberately does not add an IPC server. Read-only CLI commands query the shared ledger directly, and bounded mutating commands acquire the same database-backed lease used by the app. Pause and update actions remain app-owned. A versioned local control endpoint can be added when a concrete agent-owned app-control workflow justifies the extra process boundary.
 
 ### 6.2 Component boundaries
 
@@ -313,6 +264,8 @@ flowchart LR
     Git["Git collector"] --> Normalize["Normalization"]
     Codex["Codex adapter"] --> Normalize
     Claude["Claude adapter"] --> Normalize
+    Hooks["Optional provider hooks"] --> Inbox["Bounded event inbox"]
+    Inbox --> Normalize
     Proc["Process/build sources"] --> Normalize
 
     Normalize --> Ledger["Ledger"]
@@ -327,7 +280,7 @@ The key boundaries are:
 
 - **Domain:** source-independent types and rules.
 - **Store:** database schema, migrations, transactions, and search.
-- **Engine:** collectors, normalization, interval derivation, rollups, reporting, and application use cases.
+- **Engine:** collectors, normalization, bounded activity queries, reporting, and application use cases.
 - **Presentation:** SwiftUI and CLI formatting only.
 
 ### 6.3 Proposed repository structure
@@ -362,13 +315,13 @@ Initial source adapters and reporting implementations live as folders inside `Tr
 
 ### 6.5 Time and scheduling boundary
 
-Domain and engine code must not read the current date directly. Time enters the system through an injected clock abstraction that provides:
+Time-sensitive collection and simulation logic receives an injected clock abstraction that provides:
 
 - The current wall-clock instant.
 - The current timezone and calendar context when required.
-- Scheduled waiting through a replaceable scheduler.
+- Explicit cutoffs for deterministic derivation and reporting.
 
-Production uses the real system clock. Tests and simulations use a manually advanced virtual clock. Advancing a virtual clock wakes scheduled collection, rollup, and reporting work immediately without sleeping in real time.
+Production collection uses the real system clock. Tests and simulations use a manually advanced virtual clock. The app owns one small Task-based cadence loop; the report scheduler itself is a deterministic period policy that tests call at arbitrary virtual instants without sleeping.
 
 Collectors also receive an explicit collection range or cutoff rather than assuming that “now” is the only relevant time. This makes live collection, historical backfill, and simulation different executions of the same pipeline instead of separate implementations.
 
@@ -382,7 +335,7 @@ The ledger separates three kinds of data:
 
 1. **Imported evidence:** source messages, Git commits, working-tree observations, run lifecycles, and process results.
 2. **Normalized activity:** source-independent events that describe what was observed.
-3. **Derived views:** work intervals, hourly/daily rollups, reports, comparisons, and search indexes.
+3. **Derived views:** query-time period state, hourly/daily activity snapshots, reports, comparisons, and search indexes.
 
 Derived data can be regenerated. Imported evidence and normalized source identity provide the durable audit trail.
 
@@ -400,16 +353,17 @@ The initial schema is expected to include:
 - `working_tree_snapshots`
 - `process_runs`
 - `events`
-- `work_intervals`
+- `work_intervals` (reserved for optional live telemetry; not used by core historical metrics)
 - `reports`
-- `hourly_rollups`
-- `daily_rollups`
+- `hourly_rollups` (reserved rebuildable cache; not authoritative in the minimal V1)
+- `daily_rollups` (reserved rebuildable cache; not authoritative in the minimal V1)
 - `collector_cursors`
 - `collector_leases`
 - `service_heartbeats`
-- FTS tables for reports, commits, files, and session messages
+- source-observation provenance sufficient to reconcile hook and cache evidence
+- one FTS document index for reports, commits, repositories/working-copy paths, and session messages
 
-Exact columns will be specified with the first migration. All time-bearing records store UTC instants. Rollups also store the timezone and local period boundaries used to produce them, allowing history to remain stable when the user travels.
+Exact columns are fixed by the first migration. All time-bearing records store UTC instants. The minimal V1 calculates batched hourly and local-day snapshots directly from core events; the reserved rollup tables allow a later performance cache without changing the app or CLI query surface.
 
 ### 7.3 Event shape
 
@@ -421,6 +375,8 @@ Normalized events use a common envelope:
   "occurredAt": "2026-08-05T08:42:13Z",
   "observedAt": "2026-08-05T08:42:15Z",
   "source": "codex",
+  "ingestionPath": "hook",
+  "sourceEvidenceId": "source-evidence-id",
   "kind": "agent.run.started",
   "repositoryId": "repo-id",
   "sessionId": "session-id",
@@ -459,6 +415,7 @@ Every imported record needs:
 - Content hash or source revision marker.
 - Occurrence and observation timestamps.
 - Collector version.
+- Ingestion path and a source-evidence fingerprint when the same fact may arrive through hooks and cache reconciliation.
 
 Collectors upsert or append revisions based on stable source identity. Repeated reconciliation must produce the same ledger rather than duplicate events.
 
@@ -520,6 +477,28 @@ Trackify stores normalized session and message records so the ledger remains sea
 
 Adapter fixtures from real, redacted sessions are required. Parser compatibility must be tested independently from the rest of the engine.
 
+#### Optional live hook bridge
+
+Codex and Claude both expose lifecycle hooks. V1 provides a provider-neutral normalized command that a user, managed configuration, or later provider-specific adapter can target. It does not parse raw hook payloads or edit provider configuration. Hooks improve latency and state precision; they never replace persisted conversation-cache ingestion.
+
+```text
+provider hook
+→ provider-specific mapping outside the V1 core
+→ trackify integrations emit <codex|claude> --session … --turn … --phase …
+→ validate the normalized allowlist and 64 KiB envelope limit
+→ append one complete record under a lock to the private event inbox
+→ return without waiting for the app, Git, SQLite, network, or a model
+→ app drains, normalizes, and reconciles the envelope
+```
+
+The bridge accepts only structural evidence needed for work tracking: provider, nonempty session and turn identifiers, timestamp, optional working-directory association, and one normalized lifecycle phase. Prompts, message bodies, thinking, tool arguments, tool results, environment data, and arbitrary hook payloads are not command inputs.
+
+Provider configuration should invoke the bridge as best-effort telemetry and must not make an agent run depend on its success. The command performs no network request, provider invocation, Git inspection, database migration, or long-held lock. Concurrent calls append complete records under an exclusive file lock beneath the user-private Trackify data tree; the app owns incremental draining and ledger writes.
+
+Provider-hook installation is deliberately outside the V1 core. Codex trust review, provider policy, disabled hooks, unsupported versions, or a stopped Trackify app may prevent live delivery. The CLI reports whether its local inbox has received records, while persisted-cache reconciliation remains authoritative for eventual completeness.
+
+The same normalized fact may be observed first through a hook and later through a persisted cache record. Source adapters retain both observation provenance and one canonical identity, using provider identifiers when available and a deterministic fingerprint otherwise. Dual-path observation may improve confidence or timestamps but must not create duplicate sessions, messages, or metrics.
+
 ### 8.4 Live observation and reconciliation
 
 Live filesystem observation provides responsiveness, but it is not the sole source of correctness. The app also performs periodic reconciliation scans using collector cursors. This ensures that events missed during sleep, restart, crash, or source downtime are eventually imported.
@@ -544,10 +523,10 @@ Backfill behavior:
 - Initial model-generated reports default to a separate recent window and older reports remain available on demand.
 - Imported records retain their original `occurredAt` value and record the current import time as `observedAt`.
 - Stable source identity and content hashes make repeated backfills safe.
-- The affected intervals, rollups, reports, and search indexes are invalidated and rebuilt.
-- Recalculation includes a small boundary window before and after the requested range so intervals crossing the boundary remain correct.
+- Activity snapshots are queried directly from durable core evidence and reports can be regenerated explicitly.
+- Recalculation uses explicit local calendar boundaries and a cutoff, so the same evidence produces the same result during live collection, backfill, and replay.
 - Report generation can be enabled, disabled, or deferred to avoid unnecessary model calls during large imports.
-- Planning reports active periods, provider-job count, and approximate input tokens before report generation.
+- Planning reports history footprint plus conservative provider-call and input-token ceilings before report generation.
 
 Backfill never manufactures missing historical activity. If a source no longer contains the relevant evidence, the ledger records no activity for that source and period.
 
@@ -571,68 +550,53 @@ A scenario can describe:
 - Quiet hours and explicit no-activity periods.
 - Timezone or day-boundary transitions.
 
-The simulator advances directly to the next scheduled event. Two days can therefore be processed in seconds while still triggering the real interval derivation, hourly rollups, daily rollups, report scheduling, and UI queries at the correct simulated instants.
+The simulator advances directly to the next event. Two days can therefore be processed in seconds while exercising the real evidence ingestion, active-evidence-hour counting, LLM-turn normalization, commit metrics, period states, and activity queries. By default its ledger is deleted after validation; `--output-data-root` preserves it for ordinary UI and CLI inspection.
+
+Scheduled report recovery is separately deterministic: on each app-owned collection cycle it scans one bounded seven-day event window, fills only missing active hour/day periods plus the normal previous hour/day, and allows model calls only for the newest hour/day. Older catch-up summaries are deterministic and token-free.
 
 Simulation must use a separate temporary or explicitly named database. It must refuse to write synthetic evidence into the user's production ledger. The default test summarizer is deterministic and fixture-backed; live model calls require an explicit opt-in.
 
 The same replay runner can execute captured, redacted event fixtures. This provides reproducible regression tests for bugs that only appear across hourly or daily boundaries.
 
-## 9. Time model
+## 9. Evidence-time model
 
 ### 9.1 Definitions
 
-Trackify exposes two primary time measurements.
+Trackify's primary historical time metric is **active evidence hours**: the number of local clock hours containing at least one core evidence record. It is deliberately a count of covered hours, not a duration estimate.
 
-**Tracked work time** is the union of detected project-activity intervals. It cannot exceed elapsed wall-clock time.
+The **observed window** is the first through last evidence timestamp in the selected period. It shows chronology without claiming continuous work between the endpoints.
 
-**Agent runtime** is the sum of individual agent-run intervals. It may exceed elapsed wall-clock time when agents overlap.
+Core evidence consists of reachable commits, normalized Codex or Claude messages, real post-baseline working-tree transitions, and build/test records. File modification dates, machine idleness, inferred gaps, and lifecycle hooks do not create historical activity.
 
-Example:
+### 9.2 Optional live telemetry
 
-```text
-10:00–11:00
-Tracked work time: 60m
-Agent runtime: 92m
-```
+Explicit agent or process lifecycle events may support a separate live indicator and diagnostic interval view. Such telemetry may be absent, duplicated, interrupted, or provider-specific. It is therefore rebuildable and optional, and never changes core evidence hours, comparisons, or historical reports.
 
-### 9.2 Interval sources
+### 9.3 Attribution
 
-Intervals can come from:
+- Evidence retains its source timestamp and stable identity.
+- Repository attribution is included only when supported by a direct repository or session association.
+- Multiple records within the same local clock hour count as one active hour.
+- A normalized user message counts as an LLM turn; assistant and tool messages remain conversation-message evidence.
+- Hooks can improve immediacy without becoming a backfill authority.
 
-- Explicit agent run start and end timestamps.
-- Build and test process lifecycles.
-- Editor or terminal integration added later.
-- Git and filesystem point events grouped into bounded activity intervals.
-- User-agent interaction followed by a continuing agent run.
+### 9.4 No evidence
 
-Keyboard and mouse idleness is not authoritative. It may become a secondary signal, but it cannot close an interval while an agent, build, test, or other recognized project process is active.
-
-### 9.3 Overlap and attribution
-
-- Overlapping intervals are merged for total tracked work time.
-- Individual agent intervals are summed for agent runtime.
-- One interval may be associated with multiple repositories when evidence supports it.
-- Repository-attributed totals may therefore overlap and must not always be summed to reproduce the day total.
-- Open-ended runs are shown as active until a finish, cancellation, failure, or reconciliation rule closes them.
-
-The fallback window used to turn isolated point events into intervals will be validated with real data before being fixed as a product default.
-
-### 9.4 No activity
-
-If an hour has no qualifying evidence or intervals, its state is `no_activity`. Trackify does not ask a language model to fill that gap with a narrative.
+If an hour has no core evidence, its state is `no_activity`. Trackify does not ask a language model or heuristic to fill that gap with a narrative or invented duration.
 
 ## 10. Statistics and comparisons
 
 Initial statistics are intentionally direct:
 
-- Tracked work time.
-- Agent runtime.
+- Active evidence hours.
+- First and last evidence timestamps.
+- LLM turns and conversation messages.
 - Commits.
 - Added, deleted, and net lines.
 - Files changed.
 - Repositories touched.
-- Sessions and agent runs.
-- Hourly activity distribution.
+- Sessions represented by durable messages.
+- Hourly evidence distribution.
 
 Each metric can be compared with a trailing moving average. The initial default is 14 active days, excluding days with no detected development work.
 
@@ -645,15 +609,25 @@ For a live day, pace comparisons should compare the current total with historica
 Before requesting a language-model summary, Trackify constructs a deterministic evidence packet containing only the relevant period:
 
 - Repositories involved.
-- Work and agent intervals.
+- Active evidence hours and the first/last observed timestamps.
 - Commits.
 - Changed files and diff statistics.
 - Working-tree state at the start and end.
-- Relevant agent messages and run states.
+- Relevant normalized conversation messages with typed user or assistant roles, preserving the distinction between requested intent and reported progress.
 - Build and test outcomes.
-- Previous period state when work continues across boundaries.
 
-The evidence packet is inspectable and stored or reproducible from ledger identifiers.
+The evidence packet is reproducible from ledger identifiers and inspectable
+through a safe local preview. The transient packet is not stored. Provider-visible
+events, repositories, sessions, and prior hourly reports use short local aliases;
+validated aliases are mapped back to stable evidence identifiers before the
+report is persisted.
+
+Hourly compilation selects at most 30 events. Daily compilation selects at most
+12 day-level events and adds active hourly report digests so morning work cannot
+be displaced by a busy evening. The compiled evidence budget is 20 KiB. Selection
+metadata records context coverage and omitted evidence by kind.
+
+Deterministic and model-generated summaries interpret user messages as goals, questions, and decisions; assistant messages as progress claims or implementation context; and Git, tests, working-tree transitions, and the final period state as concrete outcome evidence. Intent and outcome may be paired only within a supported session or repository context, preventing unrelated parallel work from becoming one fabricated narrative. This role distinction is also preserved in Activity and project history.
 
 ### 11.2 Report structure
 
@@ -668,7 +642,7 @@ Reports are stored as structured records:
   "summary": "Continued implementing repository discovery...",
   "topics": ["repository discovery", "Git metadata"],
   "repositoryIds": ["repo-id"],
-  "evidenceEventIds": ["event-1", "event-2"],
+  "evidenceIds": ["stable-evidence-1", "stable-evidence-2"],
   "generator": {
     "provider": "codex",
     "model": "configured-model",
@@ -684,6 +658,7 @@ in_progress
 completed
 investigating
 waiting
+observed
 no_activity
 ```
 
@@ -710,7 +685,7 @@ SQLite FTS indexes:
 
 - Report summaries and topics.
 - Commit messages and hashes.
-- Changed file paths.
+- Repository names, remote identities, and working-copy paths.
 - Session messages.
 - Repository names and aliases.
 
@@ -739,20 +714,11 @@ The system therefore uses:
 - Database migrations with rollback-safe development practices.
 - Collector health records and last-success timestamps.
 - A `trackify doctor` command that checks the database, configured roots, source availability, permissions, app heartbeat, and collector errors.
-- Regeneration of derived intervals, rollups, reports, and FTS indexes from durable evidence.
+- Regeneration of reports from durable evidence; hourly/day snapshots and moving averages are deterministic queries over that evidence.
 
 A collector failure must not prevent unrelated collectors or historical queries from working.
 
-Derived data is rebuilt through one range-based pipeline:
-
-```bash
-trackify rebuild \
-  --from 2026-08-03 \
-  --to 2026-08-05 \
-  --derived intervals,rollups,reports,search
-```
-
-Rebuild does not re-import or modify source evidence. This separation allows reporting and interval algorithms to evolve while preserving the historical ledger.
+Activity snapshots are pure range queries over immutable evidence, so they do not require a rebuild step. Explicit report regeneration creates a new traceable revision without re-importing or modifying source evidence. This separation allows reporting and activity-query algorithms to evolve while preserving the historical ledger.
 
 ## 14. Local data and access
 
@@ -774,12 +740,12 @@ The app should:
 
 ## 15. Testing strategy
 
-### Domain and interval tests
+### Domain and activity tests
 
-- Overlapping human, agent, build, and repository intervals.
-- Parallel agents whose summed runtime exceeds wall-clock time.
-- Open-ended, cancelled, failed, and waiting runs.
-- Periods containing point events but no explicit run lifecycle.
+- Multiple evidence records collapsing into one local active hour.
+- Parallel conversations without double-counting wall-clock hours.
+- Lifecycle-only periods producing no core historical activity.
+- Periods containing durable messages or commits without any explicit run lifecycle.
 - True no-activity hours.
 - Work crossing hourly, daily, and timezone boundaries.
 - All time-dependent behavior under a manually advanced virtual clock.
@@ -805,20 +771,24 @@ The app should:
 - In-progress, completed, failed, and interrupted sessions.
 - Missing repository metadata and path-based association.
 - Cache rotation and duplicate discovery.
+- Sanitized lifecycle-hook envelopes for each supported provider capability set.
+- The same lifecycle fact arriving hook-first, cache-first, duplicated, delayed, and out of order.
+- Disabled, untrusted, malformed, oversized, and unsupported hook behavior falling back to cache reconciliation.
+- Concurrent hook delivery proving the bridge remains bounded and cannot block the provider session.
 
 ### Reporting tests
 
 - No-activity periods skip model generation.
 - Evidence identifiers in reports exist and fall within the relevant context.
-- In-progress evidence does not become an unsupported completion claim.
+- The provider cannot override locally derived in-progress, waiting, failed, or inactive state; prompts require the narrative to preserve that state, while evidence-link validation prevents fabricated support.
 - Late evidence creates a new revision.
 - Daily reports remain consistent with their hourly evidence.
-- Two simulated days produce the same reports and rollups across repeated runs.
+- Two simulated days produce the same reports and activity snapshots across repeated runs.
 
 ### Backfill and simulation tests
 
 - Repeating the same backfill produces no duplicate evidence.
-- Late evidence rebuilds only the affected range and its boundary window.
+- Late evidence changes only queries and report revisions for the affected range.
 - Backfill preserves original occurrence time and records a distinct observation time.
 - An instant-speed simulation triggers every expected hourly and daily boundary.
 - Synthetic scenarios cannot open the production database.
@@ -839,7 +809,7 @@ The app should:
 
 - Scaffold the Swift package and test targets.
 - Define domain types and identifiers.
-- Define the injected clock, scheduler, and collection-range boundaries.
+- Define injected wall-clock, explicit-cutoff, scheduled-period, and collection-range boundaries.
 - Add GRDB, the first migration, and database configuration.
 - Implement collector cursors, leases, and heartbeats.
 - Add `trackify doctor` and basic `trackify status`.
@@ -854,7 +824,7 @@ Outcome: a reliable local database and CLI foundation.
 - Import commits and working-tree snapshots.
 - Calculate file and line statistics.
 - Add `repos`, `today`, `timeline`, and initial search commands.
-- Add range-based Git backfill and derived-data rebuild commands.
+- Add range-based Git backfill and deterministic range-query commands.
 
 Outcome: Trackify is already useful as a local Git work ledger.
 
@@ -873,14 +843,17 @@ Outcome: the ledger becomes continuously visible and collectible.
 - Implement the Codex adapter with fixtures.
 - Implement the Claude adapter with fixtures.
 - Normalize sessions, messages, and available run lifecycles.
+- Add the optional bounded hook bridge and private event inbox for both providers.
+- Reconcile hook and cache observations through one idempotent source-evidence identity.
 - Add session search and repository association.
 
 Outcome: Git and agent activity form one searchable history.
 
-### Milestone 5: Time and reports
+### Milestone 5: Evidence time and reports
 
-- Derive tracked-work and agent-runtime intervals.
-- Build hourly and daily rollups.
+- Count active evidence hours, LLM turns, messages, and observed windows from durable records.
+- Keep lifecycle intervals as optional telemetry outside core activity.
+- Build batched hourly and daily activity-query projections.
 - Assemble inspectable evidence packets.
 - Implement the summarizer boundary and both Codex CLI and Claude Code CLI providers.
 - Add provider health, selection, non-persistent invocation, and feedback-loop prevention.
@@ -905,9 +878,9 @@ Outcome: Trackify provides a dependable long-term development history.
 - SQLite/GRDB local ledger.
 - Menu-bar process owns continuous collection initially; no separate daemon.
 - System Git CLI for repository inspection.
-- Event-backed derived rollups and reports.
-- Separate tracked-work time and agent-runtime metrics.
-- Machine idle state is not authoritative.
+- Event-backed derived activity snapshots and reports.
+- Active evidence hours are coverage counts, not duration estimates.
+- Optional lifecycle telemetry and machine idle state do not alter historical activity.
 - Full-text search before semantic search.
 - No composite productivity score in the initial product.
 - No-activity reports are deterministic and do not use a language model.
@@ -916,7 +889,7 @@ Outcome: Trackify provides a dependable long-term development history.
 - Installation is agent-drivable from a stable signed-release protocol.
 - Guided setup uses bounded local inspection and separates broad evidence import from recent model-report generation.
 - Discovery roots and relative paths provide automatic repository grouping in V1.
-- Time and scheduled work use injected clock and scheduler abstractions.
+- Collection time uses injected clocks; derivation/reporting use explicit cutoffs and deterministic period policy; only the app owns real waiting.
 - Simulation always uses an isolated ledger and deterministic summarizer by default.
 - Live collection and historical backfill share the same idempotent collector pipeline.
 - Direct application updates use Sparkle 2 with signed, notarized GitHub Release artifacts.
@@ -934,7 +907,6 @@ Outcome: Trackify provides a dependable long-term development history.
 These should be resolved with prototypes or real captured data rather than speculation:
 
 - Exact supported Codex and Claude cache formats and lifecycle signals.
-- The fallback window for grouping isolated file and Git events into work intervals.
 - How precisely to detect active local build and test processes without editor-specific integration.
 - Whether raw session tool payloads should be retained or selectively normalized.
 - Minimum supported Codex and Claude CLI versions after compatibility prototypes.

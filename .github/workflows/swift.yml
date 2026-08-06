@@ -1,0 +1,44 @@
+name: Swift
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v7
+      - name: Resolve dependencies
+        run: swift package resolve
+      - name: Build release configuration
+        run: swift build --configuration release
+      - name: Run tests
+        run: swift test --enable-code-coverage
+      - name: Verify isolated deterministic simulation
+        run: |
+          swift run trackify simulate \
+            --scenario foundation \
+            --speed instant \
+            --days 2 \
+            --json > simulation.json
+          test "$(jq -r '.schemaVersion' simulation.json)" = "1"
+          test "$(jq -r '.result.generatedEvents' simulation.json)" = "9"
+          test "$(jq -r '.result.counts.events' simulation.json)" = "9"
+          test "$(jq -r '.result.days[1].activeSessions' simulation.json)" = "1"
+      - name: Verify fixture privacy
+        run: scripts/check-fixture-privacy.sh
+      - name: Build native app bundle
+        env:
+          TRACKIFY_ARCHITECTURES: native
+          TRACKIFY_VERSION: 0.1.0-ci
+          TRACKIFY_BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          scripts/build-app-bundle.sh .build/ci-bundle
+          test "$(.build/ci-bundle/Trackify.app/Contents/SharedSupport/trackify --version)" = "0.1.0-ci"
+          plutil -lint .build/ci-bundle/Trackify.app/Contents/Info.plist

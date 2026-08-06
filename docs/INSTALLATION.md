@@ -1,6 +1,6 @@
 # Trackify Installation and Distribution
 
-Status: Proposed
+Status: V1 protocol implemented; signed release publication pending
 Last updated: 2026-08-05
 
 ## 1. Purpose
@@ -24,7 +24,7 @@ Application update delivery is defined in [UPDATES.md](./UPDATES.md).
 - Support Codex-driven and Claude-driven installation equally.
 - Avoid requiring the user to understand package managers or shell configuration.
 - Preserve macOS code-signing, notarization, Gatekeeper, and privacy controls.
-- Detect existing authenticated Codex and Claude CLIs.
+- Detect installed Codex and Claude CLIs, proving authentication only when the observed CLI exposes a safe non-interactive status command.
 - Configure a working summary provider without copying credentials.
 - Discover likely repository roots and prepare concise group recommendations.
 - Ask one consolidated setup question covering groups and backfill scope.
@@ -155,6 +155,7 @@ The installer agent follows these steps.
 - Check whether Homebrew is available.
 - Check available disk space.
 - Detect `codex` and `claude` executables without reading their credential files.
+- Detect documented lifecycle-hook capability, existing Trackify integration state, trust requirements, and managed-policy restrictions without changing provider configuration.
 
 ### Step 2: Resolve release
 
@@ -187,16 +188,13 @@ Run deterministic local inspection:
 ```bash
 trackify bootstrap inspect --json
 
-trackify backfill plan \
-  --evidence all \
-  --reports 14d \
-  --json
+trackify bootstrap inspect --json
 ```
 
 Inspection:
 
 - Creates the database and initial migrations.
-- Detects supported authenticated provider CLIs.
+- Detects supported provider CLIs and the authentication certainty each version can report safely.
 - Locates likely repository roots and counts repositories beneath them.
 - Suggests deterministic labels from folder names, session paths, and existing installer context.
 - Estimates available evidence, active report periods, provider calls, and input tokens.
@@ -207,9 +205,9 @@ The installer agent combines this manifest with reliable knowledge already prese
 After confirmation, run:
 
 ```bash
+trackify roots add <path> --name <group>
 trackify bootstrap apply \
   --provider <codex|claude> \
-  --root <path> --group <name> \
   --backfill-evidence all \
   --backfill-reports 14d \
   --launch \
@@ -220,7 +218,8 @@ Apply:
 
 - Configures the confirmed roots and group labels.
 - Selects the confirmed report provider.
-- Schedules evidence and report backfill separately.
+- Reports the optional bounded Codex/Claude hook target without rewriting provider configuration.
+- Opens the app immediately with collection temporarily paused, then performs evidence import and recent-report generation as separate bounded phases against the shared ledger.
 - Registers launch-at-login.
 - Starts the app.
 - Returns structured progress and outstanding user actions.
@@ -250,28 +249,28 @@ The agent opens Trackify and reports:
 
 `trackify bootstrap inspect` is read-only apart from creating an empty initialized ledger when one does not exist. `trackify bootstrap apply` is idempotent. Running apply repeatedly:
 
-- Does not duplicate roots, repositories, sessions, or backfill jobs.
+- Does not duplicate roots, repositories, sessions, evidence, or reports with the same stable revision identity.
 - Does not overwrite an explicit provider selection.
 - Does not reset exclusions or user settings.
-- Repairs missing application/CLI linkage when safe.
+- Leaves application/CLI-link repair to the narrow installer repair tool.
 - Applies pending database migrations once.
 - Rechecks provider and source health.
-- Restarts incomplete backfill jobs.
+- Safely repeats idempotent import after an interrupted apply.
 
 Options:
 
 ```bash
 trackify bootstrap inspect --json
 trackify bootstrap apply --provider auto|codex|claude
-trackify bootstrap apply --root <path> --group <name>
-trackify bootstrap apply --backfill-evidence all|<duration>|none
+trackify bootstrap apply --backfill-evidence all|none
 trackify bootstrap apply --backfill-reports <duration>|none
 trackify bootstrap apply --launch
-trackify bootstrap apply --no-login-item
 trackify bootstrap apply --json
 ```
 
 Bootstrap never silently installs or authenticates Codex or Claude.
+
+V1 does not rewrite Codex or Claude configuration during bootstrap. It exposes the bounded `trackify integrations emit` hook target and durable cache reconciliation; a user or managed provider configuration may point documented lifecycle hooks at that target. Automatic provider-configuration editing remains deferred until both providers expose stable, versioned contracts. This keeps setup additive and prevents Trackify from replacing unrelated settings or bypassing trust and organization policy.
 
 ## 10. Provider detection during setup
 
@@ -282,7 +281,6 @@ codex --version
 codex login status
 
 claude --version
-claude auth status
 ```
 
 Outcomes:
@@ -291,20 +289,24 @@ Outcomes:
 Only Codex ready
   select Codex automatically
 
-Only Claude ready
-  select Claude automatically
+Only Claude installed, authentication unknown
+  select Claude automatically and verify on the first enabled report;
+  fall back to a deterministic report if access is unavailable
 
-Both ready
+Both available
   installer agent may pass the provider explicitly;
   otherwise request one lightweight choice
 
 Neither ready
   finish installing Trackify;
   open the appropriate provider login flow;
-  keep report jobs pending
+  keep deterministic reports and statistics working;
+  let the user enable a provider later
 ```
 
 The provider choice affects report generation only. Trackify still imports every supported local Codex and Claude session source it discovers.
+
+Hook configuration is independent from report-provider readiness. `trackify integrations status` reports the private local inbox and confirms that durable cache reconciliation remains active. Hooks are optional accelerators; cache-only collection remains a complete supported mode.
 
 ## 11. Repository-root discovery during setup
 
@@ -359,8 +361,7 @@ The installer agent recommends groups using this precedence:
 1. Explicit information already supplied by the user.
 2. Reliable knowledge from the current installation conversation.
 3. Discovery-root folder names and relative hierarchy.
-4. Recent Codex and Claude working-directory evidence.
-5. Repository density beneath a candidate root.
+4. Repository density beneath a candidate root.
 
 The agent states uncertainty when a label is ambiguous. It does not infer employers, clients, or sensitive semantic categories from source code.
 
@@ -377,8 +378,8 @@ Trackify found 62 repositories:
 
 I recommend tracking both groups, importing all available Git and
 conversation evidence, and generating detailed reports for the last
-14 days. Claude is authenticated and will be used for reports with
-Opus at medium effort.
+14 days. Claude is installed and will be used for reports with Opus;
+this version verifies authentication on the first report call.
 
 Should I apply this setup and begin the backfill?
 ```
@@ -388,10 +389,10 @@ Additional questions are asked only when ambiguity would materially change what 
 Example agent-supplied setup:
 
 ```bash
+trackify roots add ~/Developer/Work --name Work
+trackify roots add ~/Developer/Personal --name Personal
 trackify bootstrap apply \
   --provider codex \
-  --root ~/Developer/Work --group Work \
-  --root ~/Developer/Personal --group Personal \
   --backfill-evidence all \
   --backfill-reports 14d \
   --launch
@@ -415,26 +416,20 @@ All available history
 
 Evidence import includes available commits, sessions, timestamps, repository associations, and deterministic statistics. It does not consume model tokens.
 
-`trackify backfill plan` calculates the report workload before asking for confirmation:
+`trackify bootstrap inspect --json` includes a bounded backfill plan before the agent asks for confirmation:
 
 ```json
 {
-  "evidence": {
-    "availableFrom": "2025-11-12",
-    "commits": 1842,
-    "sessions": 317
-  },
-  "reports": {
-    "rangeDays": 14,
-    "activeHours": 46,
-    "noActivityHours": 290,
-    "providerJobs": 9,
-    "estimatedInputTokens": 94000
-  }
+  "historyFiles": 317,
+  "historyBytes": 28490123,
+  "initialReportDays": 14,
+  "maximumProviderCalls": 14,
+  "maximumInputTokens": 86016,
+  "note": "Evidence import is local and token-free. Reports run only for active days; smart compilation caps provider evidence at 20 KiB per call."
 }
 ```
 
-The estimate reports active periods, provider calls, and approximate input tokens. It does not claim a dollar cost because subscription, API, and organization billing differ.
+The plan reports the discovered history-file footprint and conservative ceilings. Actual provider calls are lower because inactive days make no model call. It does not claim a dollar cost because subscription, API, and organization billing differ.
 
 Token controls:
 
@@ -443,10 +438,13 @@ Token controls:
 - Aggregate repeated file changes and omit unchanged observations.
 - Prefer file paths, commit messages, statistics, and selected session excerpts over full diffs or transcripts.
 - Enforce a per-period evidence budget.
+- Use packet-local aliases instead of sending stable ledger identifiers.
+- Preserve user intent, concrete outcomes, final state, and parallel-project
+  coverage before lower-value progress narration.
 - Batch adjacent report periods when the provider contract can return one validated result per period.
 - Build daily reports from hourly reports and day-level deltas.
 - Defer older reports until a user or agent opens, searches, or explicitly requests them.
-- Show report-generation progress separately from local evidence import.
+- Keep evidence import and report-generation phases separate in structured bootstrap output.
 
 ## 13. Required user interaction
 
@@ -456,7 +454,13 @@ Trackify and installer agents must be honest about actions macOS or providers re
 
 If no selected provider is authenticated, the user must complete the provider's browser or organization login flow. The installer can start the flow but cannot complete identity verification on the user's behalf.
 
-### 13.2 Protected folder access
+### 13.2 Provider hook trust and policy
+
+Codex may require the user to review and trust a newly installed non-managed hook definition. Organization policy may disable or restrict user and plugin hooks in either provider. Trackify and the installer agent surface the exact state and normal provider-native review action; they never bypass trust or managed policy.
+
+Declining or being unable to enable hooks does not block setup. Trackify continues with persisted-cache observation and labels current-state latency accordingly.
+
+### 13.3 Protected folder access
 
 Desktop, Documents, network volumes, external volumes, and other protected locations may require access approval for the Trackify application itself. Existing permission granted to Codex or Claude does not automatically transfer to Trackify.
 
@@ -473,11 +477,11 @@ Trackify needs access to your development folders:
 
 Trackify uses normal macOS permission and folder-selection mechanisms. The installer never instructs an agent to bypass TCC, grant Full Disk Access through unsupported means, remove quarantine attributes to evade Gatekeeper, or alter system security settings.
 
-### 13.3 First launch and login item
+### 13.4 First launch and login item
 
 macOS may present first-launch, downloaded-application, background-item, or login-item notifications. Signing and notarization minimize friction but do not eliminate policy-controlled approval.
 
-### 13.4 Administrator authorization
+### 13.5 Administrator authorization
 
 User-scoped installation should not need administrator authorization. A system-wide installation or managed package may require it and must ask explicitly.
 
@@ -497,7 +501,7 @@ Reports                       Available for 12 repositories
 Requirements:
 
 - Partial results become visible immediately.
-- Repository discovery, Git backfill, conversation import, interval rebuild, and report generation have separate progress.
+- Repository discovery, Git/conversation import, activity querying, and report generation fail independently and remain safe to repeat.
 - The menu bar remains responsive during setup.
 - Backfill resumes after restart.
 - Missing provider authentication does not prevent Git statistics.
@@ -540,21 +544,19 @@ Trackify records whether an installation is direct, Homebrew-owned, managed, or 
 The app checks the stable channel automatically and exposes `Update & Relaunch` in the menu and Settings. The CLI exposes the same coordinator:
 
 ```bash
-trackify update status --json
-trackify update check --json
-trackify update install --relaunch --json
+open -a Trackify
 ```
 
-Before replacement, Trackify stops new jobs, persists resumable state, checkpoints SQLite, and closes its connections. After relaunch it verifies the ledger, creates a recoverable backup when required, runs migrations transactionally, and resumes reconciliation. A failure must preserve the existing ledger and produce an explicit recovery state rather than silently creating an empty database.
+Sparkle owns verified replacement and relaunch. Trackify relies on transactional imports, post-commit cursors, bounded subprocesses, and idempotent reconciliation rather than a second custom updater protocol. After relaunch it opens the ledger, creates a recoverable backup before migrating an existing schema, runs migrations transactionally, and resumes reconciliation. A failure preserves the existing ledger rather than silently creating an empty database.
 
 The complete release pipeline, trust model, user experience, migration behavior, and acceptance criteria are specified in [UPDATES.md](./UPDATES.md).
 
 ## 18. Repair
 
-Agent-readable repair command:
+Agent-readable health command:
 
 ```bash
-trackify repair --json
+trackify doctor --json
 ```
 
 Safe repair may:
@@ -570,23 +572,27 @@ Safe repair may:
 
 Repair does not delete source evidence, reset configuration, log out providers, or request broad permissions automatically.
 
+The source tree includes `scripts/repair-local.sh` for the currently implemented user-scoped repair. It verifies the expected bundle identity, refuses to replace an unrelated `~/.local/bin/trackify`, restores only Trackify's CLI link, and runs `trackify doctor`. Signed-release repair will use the same narrow behavior after artifact verification.
+
 ## 19. Uninstallation and data retention
 
 Uninstallation separates application binaries from the user-owned ledger.
 
 ```bash
-trackify uninstall
-trackify uninstall --remove-data
+scripts/uninstall-local.sh
+scripts/uninstall-local.sh --delete-data
 ```
 
 Default uninstall:
 
 - Stops Trackify.
-- Removes launch-at-login registration.
-- Removes the app and CLI link.
+- Quits the running app before changing files.
+- Moves the app and Trackify-owned CLI link to Trash.
 - Preserves the ledger and configuration.
 
-`--remove-data` requires explicit confirmation and reports the exact Application Support path before deletion.
+`--delete-data` is explicit and moves the exact Application Support directory to Trash rather than permanently deleting it. An unrelated CLI-path file is never replaced or removed. Launch-at-login registration is harmless once the bundle is absent and is removed through the app when available; signed installer validation still covers that lifecycle.
+
+For a locally built bundle, `scripts/install-local.sh <Trackify.app> [--launch]` stages the app, preserves an existing bundle as a timestamped backup, installs to `~/Applications`, creates the stable CLI link, and runs diagnostics. Published direct bundles must pass Developer ID Team `PNTJNS22UU` and Gatekeeper verification; unsigned development bundles require the explicit `TRACKIFY_ALLOW_UNSIGNED=1` override. The installer never edits shell startup files or uses `sudo`.
 
 ## 20. Security requirements
 
@@ -625,6 +631,11 @@ Default uninstall:
 - Unsupported CLI version.
 - Organization policy blocks the requested model.
 - Neither provider installed.
+- External hooks sending valid allowlisted events.
+- Hooks absent or disabled while cache ingestion remains healthy.
+- Duplicate hook and cache observations.
+- Malformed or oversized hook envelopes rejected without blocking provider work.
+- Repeated integration install and removal preserve unrelated provider configuration.
 
 ### Guided setup matrix
 
@@ -632,7 +643,7 @@ Default uninstall:
 - Ambiguous root labels are identified without source-code inspection.
 - Existing conversation knowledge can refine a folder label.
 - The setup manifest remains within its candidate and output limits.
-- Evidence-all/report-recent recommendations produce the correct separate jobs.
+- Evidence-all/report-recent recommendations produce the correct separate bounded phases.
 - The agent asks again before materially expanding report history.
 
 ### Permission matrix
@@ -656,7 +667,7 @@ Default uninstall:
 - Repair run after partial installation.
 - Repeated bootstrap and installation remain idempotent.
 - Invalid Sparkle enclosure signature.
-- Update during collection, report generation, backfill, and rebuild.
+- Update during collection, report generation, backfill, and simulation.
 - Bundle replacement followed by successful and failed ledger migrations.
 - Direct, Homebrew, managed, and development update ownership.
 
@@ -667,10 +678,10 @@ Default uninstall:
 3. Release artifacts are verified before installation.
 4. The default installation path requires no administrator privileges.
 5. App and CLI versions match.
-6. Existing authenticated Codex or Claude access is detected without reading credentials.
+6. Codex authentication is detected through its non-interactive status command; Claude Code versions without such a command remain explicitly `authentication_unknown` until the first enabled report invocation, without reading credentials.
 7. A single ready provider is selected automatically.
 8. Both-provider and no-provider states produce clear bounded setup actions.
-9. Initial discovery and backfill begin without blocking the app from opening.
+9. The app opens before bounded backfill finishes; temporary collection pause prevents a duplicate app import while bootstrap owns the first pass.
 10. Protected folder access uses standard macOS approval.
 11. Launch-at-login is registered through the application and remains user-controllable.
 12. Repeating bootstrap does not duplicate configuration or ledger data.
@@ -681,9 +692,12 @@ Default uninstall:
 17. The installer agent recommends primary groups from a bounded deterministic setup manifest and reliable conversation knowledge.
 18. Normal installation requires at most one consolidated setup confirmation beyond provider login and macOS approvals.
 19. The default recommendation imports all available local evidence but generates reports only for a recent window.
-20. Backfill planning exposes active periods, provider-call count, and approximate input tokens before confirmation.
+20. Backfill planning exposes history footprint plus conservative provider-call and input-token ceilings before confirmation.
 21. Direct installations expose a verified one-click Sparkle update while other installation origins defer to their owner.
 22. The app and bundled CLI update as one versioned unit from GitHub Release artifacts.
+23. Supported Codex and Claude hooks can target the bounded `integrations emit` bridge without changing the ledger contract.
+24. Missing, disabled, or unsupported hooks do not block cache-only collection.
+25. Trackify V1 does not own or rewrite provider configuration, so disabling an external hook leaves durable imported history intact.
 
 ## 23. Completion boundary
 
@@ -692,8 +706,9 @@ Agent-driven installation is successful when:
 ```text
 signed app and CLI installed
 → provider state detected
+→ optional hook target reported; cache reconciliation remains active
 → repository roots discovered or awaiting explicit folder approval
-→ initial backfill scheduled
+→ app opened and initial bounded backfill performed idempotently
 → launch at login registered
 → Trackify opened
 → doctor reports healthy or lists only explicit user actions

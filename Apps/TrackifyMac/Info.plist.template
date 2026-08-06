@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>TrackifyMac</string>
+    <key>CFBundleIconFile</key>
+    <string>Trackify.icns</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.zoulabs.trackify</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>Trackify</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>__VERSION__</string>
+    <key>CFBundleVersion</key>
+    <string>__BUILD__</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>14.0</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>com.zoulabs.trackify.control</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>trackify</string>
+            </array>
+        </dict>
+    </array>
+    <key>TrackifyInstallationOrigin</key>
+    <string>__INSTALLATION_ORIGIN__</string>
+    <key>SUEnableAutomaticChecks</key>
+    <true/>
+    <key>SUFeedURL</key>
+    <string>https://vucinatim.github.io/trackify/appcast.xml</string>
+    <key>SUPublicEDKey</key>
+    <string>__SPARKLE_PUBLIC_KEY__</string>
+</dict>
+</plist>

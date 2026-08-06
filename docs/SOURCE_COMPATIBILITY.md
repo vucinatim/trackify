@@ -1,7 +1,7 @@
 # Trackify Conversation Source Compatibility
 
 Status: Initial compatibility spike complete
-Last updated: 2026-08-05
+Last updated: 2026-08-06
 
 ## 1. Purpose
 
@@ -53,6 +53,14 @@ RunObservation
 - kind
 - occurredAt
 - state
+
+SourceEvidenceRef
+- source
+- ingestionPath: cache or hook
+- sourceRecordId, optional
+- deterministicFingerprint
+- observedAt
+- adapterVersion
 ```
 
 Normalized states remain limited to:
@@ -79,7 +87,10 @@ The adapter may emit `unknown`; it may not turn a missing lifecycle signal into 
 - Treat unknown extra fields as forward-compatible.
 - Quarantine records missing required identity or type fields instead of partially importing them.
 - Deduplicate by source identifier when present and by canonical content hash otherwise.
+- Redact recognized credentials and remove transport-only attachment markup before message fingerprinting, persistence, or indexing.
+- Treat otherwise-identical attachment-bearing and text-only representations from the same session, role, and bounded occurrence window as one canonical message while retaining source aliases.
 - Store occurrence time separately from import observation time.
+- Version the directory cursor independently from individual evidence records. V1 cursor version 2 adds normalized message-observation evidence; a version-1 cursor is reset once so existing caches replay through the newer adapter without losing data or duplicating stable records.
 
 ## 4. Codex history source
 
@@ -209,7 +220,84 @@ Model refusal fallback records are evidence of a provider transition, not proof 
 
 Trackify invokes Claude with `--no-session-persistence` and an internal operation marker. The collector excludes marked records if a future Claude version persists them despite that option.
 
-## 6. Compatibility policy
+## 5.5 Claude Desktop Code history source
+
+Claude Desktop Code is a distinct source surface from terminal Claude Code. The
+observed macOS location is:
+
+```text
+~/Library/Application Support/Claude/local-agent-mode-sessions/**/audit.jsonl
+```
+
+Each audit stream may have adjacent session metadata. Trackify decodes only
+`sessionId`, `cliSessionId`, and `cwd` from that metadata so the normalized
+session can retain identity and repository association. It does not decode or
+store account name, email, system prompt, organization policy, MCP configuration,
+selected folders, or other Desktop configuration.
+
+Audit records use `_audit_timestamp` and `session_id`; the adapter maps those to
+the shared Claude conversation contract, retains user and assistant text blocks,
+and ignores thinking, tool arguments/results, diagnostics, and unsupported
+record families. It removes `_audit_hmac` before normalization and never reads
+the sibling `.audit-key`. The audit stream is treated as an observed local cache,
+not as an authentication or integrity API.
+
+Terminal and Desktop sources have independent cursors and health states. If the
+same stable Claude session appears through both surfaces, the normal canonical
+evidence rules reconcile it rather than double-counting work. Ordinary Claude
+Desktop chat outside Desktop Code remains out of scope.
+
+## 6. Live hook bridge
+
+Persisted caches remain the durable production source for history, backfill, and recovery. Codex and Claude expose lifecycle hooks that can optionally target Trackify's provider-neutral normalized bridge to improve live state and timing.
+
+- Codex supports lifecycle events including session start/end, prompt submission, stopping, tool activity, and subagent lifecycle through its documented [hooks system](https://learn.chatgpt.com/docs/hooks).
+- Claude Code exposes corresponding session, prompt, tool, failure, stop, subagent, worktree, and related events through its documented [hooks system](https://code.claude.com/docs/en/hooks).
+- V1 does not parse either provider's raw hook payload or mutate provider configuration. A user, managed configuration, or later provider-specific adapter maps a supported hook event into the normalized command below.
+- A missing, disabled, unsupported, policy-blocked, or untrusted hook configuration affects live precision only. Cache reconciliation continues normally.
+
+### 6.1 Ingestion contract
+
+The normalized bridge is:
+
+```bash
+trackify integrations emit <codex|claude> \
+  --session <provider-session-id> \
+  --turn <provider-turn-id> \
+  --phase <started|waiting|completed|failed|interrupted> \
+  [--at <iso-8601>] [--cwd <working-directory>]
+```
+
+The command validates the normalized allowlist, caps the encoded envelope at 64 KiB, appends one complete line under an exclusive file lock to a mode-`0600` inbox inside the private data root, and exits. It does not open the ledger, inspect Git, invoke a provider, access the network, or wait for the Trackify app.
+
+Allowed normalized fields are limited to:
+
+- Provider.
+- Nonempty provider session and turn identifiers.
+- One normalized lifecycle phase.
+- Occurrence timestamp.
+- Optional working-directory association.
+
+The bridge discards prompt text, assistant text, thinking, tool arguments, tool results, command output, environment data, credentials, arbitrary nested payloads, and provider diagnostics. Searchable messages continue to come from the cache adapter under the normal storage policy.
+
+### 6.2 Delivery and reconciliation
+
+Hook delivery is best-effort and may be absent, delayed, duplicated, or out of order. Stable normalized inputs are idempotent. Concurrent invocations append complete locked records beneath the mode-`0700` Trackify data tree. Empty identifiers and oversized envelopes fail before creating or changing the inbox; provider hook configuration should treat this optional telemetry command as non-authoritative.
+
+The app drains the inbox and normalizes hook evidence through the same adapter contract as cache records. When the cache later exposes the same lifecycle fact, Trackify reconciles it using:
+
+1. Provider event, session, turn, or tool identity when stable identifiers exist.
+2. Otherwise, a deterministic fingerprint over provider, semantic event kind, session relationship, bounded occurrence time, and non-sensitive structural fields.
+
+Both observation records may be retained as provenance, but they resolve to one canonical session, run transition, interval boundary, and metric contribution. Hook arrival order cannot change the final rebuilt ledger.
+
+### 6.3 Installation and trust
+
+V1 exposes the bridge and inbox status but does not install, merge, or inspect provider hook configuration. Automatic provider-specific setup is deferred until stable versioned contracts justify the maintenance and trust surface. Trackify never bypasses Codex hook trust review or organization-managed provider policy.
+
+Trackify never requires hooks for historical import or report generation.
+
+## 7. Compatibility policy
 
 Adapters select behavior by record shape and source schema fingerprint, not only by CLI semantic version.
 
@@ -225,7 +313,7 @@ Adapters select behavior by record shape and source schema fingerprint, not only
 {
   "source": "claude",
   "detectedVersion": "2.1.29",
-  "adapterVersion": 1,
+  "adapterVersion": 2,
   "schemaFingerprint": "<hash>",
   "status": "supported",
   "unknownRecordCount": 0,
@@ -235,7 +323,7 @@ Adapters select behavior by record shape and source schema fingerprint, not only
 
 The first public release advertises the exact fixture-tested versions and any shape-compatible versions exercised in CI. New versions become supported after sanitized fixtures pass the same contract suite.
 
-## 7. Fixtures and tools
+## 8. Fixtures and tools
 
 Fixtures:
 
@@ -261,7 +349,7 @@ scripts/compatibility/sanitize-fixture.mjs
 
 These tools output only structural profiles or sanitized fixtures. Raw cache files are never copied into the workspace.
 
-## 8. Remaining compatibility tests
+## 9. Remaining compatibility tests
 
 - [x] Completed Codex turns.
 - [x] Interrupted Codex turn observed through the app-server comparison profile.
@@ -272,7 +360,11 @@ These tools output only structural profiles or sanitized fixtures. Raw cache fil
 - [x] Unknown and optional fields tolerated structurally.
 - [x] Explicit failed, aborted, interrupted, and error Codex record variants.
 - [x] Explicit top-level Claude API-error record variant. Error-like strings inside nested content are not treated as lifecycle evidence.
-- [ ] Cache truncation and replacement while the app is offline.
+- [x] Cache truncation and replacement while the app is offline, including same-inode truncation and atomic replacement.
 - [ ] Same fixture suite on at least one coworker's Claude Code installation.
+- [x] Exercise deterministic normalized lifecycle envelopes for both provider identities.
+- [x] Verify hook-first/cache reconciliation and duplicate delivery against stable canonical records.
+- [ ] Verify delayed and out-of-order hook reconciliation across an extended live run.
+- [x] Verify an absent hook inbox preserves cache-only collection.
 
-The remaining cases are implementation tests, not blockers to scaffolding. They remain blockers to advertising full failure-state support in the signed V1 release.
+The remaining cases are implementation tests, not blockers to scaffolding. They remain blockers to advertising full hook and failure-state support in the signed V1 release.

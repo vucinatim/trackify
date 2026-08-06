@@ -1,0 +1,15 @@
+{
+  "id": "my-standup",
+  "name": "My stand-up",
+  "purpose": "Summarize completed work, current work, and blockers",
+  "audience": "team",
+  "cadence": "on_demand",
+  "repositoryIDs": [],
+  "groupNames": [],
+  "customFocus": "Lead with concrete outcomes and state unfinished work plainly.",
+  "tone": "concise and factual",
+  "outputFormat": "markdown",
+  "maximumCharacters": 1200,
+  "privacyProfile": "team",
+  "providerModeOverride": null
+}

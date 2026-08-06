@@ -1,7 +1,7 @@
 # Trackify V1 Readiness Checklist
 
-Status: Ready to scaffold; validation gates remain
-Last updated: 2026-08-05
+Status: Release-candidate source implemented; distribution gates remain
+Last updated: 2026-08-06
 
 ## 1. Purpose
 
@@ -11,14 +11,17 @@ The checklist is intentionally limited to decisions that prevent security proble
 
 ## 2. Readiness conclusion
 
-Trackify is ready to begin V1 implementation.
+Trackify's V1 source implementation is at release-candidate stage.
 
-The product boundary, user experience, evidence model, time semantics, repository discovery, report providers, installation, updates, simulation, backfill, and visual identity are sufficiently defined. Further speculative feature design should stop until the headless vertical slice is working.
+The headless ledger, native app, CLI, adapters, reporting, bootstrap, simulation, and bundle tooling are implemented and validated by the repository test suite. Remaining gates are distribution credentials, fleet confirmation, soak/resource measurements, and signed-release verification.
 
-Two implementation gates remain intentionally open:
+The criterion-by-criterion evidence and exact remaining proof are maintained in [V1_ACCEPTANCE_AUDIT.md](./V1_ACCEPTANCE_AUDIT.md).
 
-1. Real Codex and Claude cache fixtures must validate the adapter and source-evidence schema before migration 1 is frozen.
-2. The public release identity—name clearance, bundle identifiers, signing identity, domain, and repository license—must be finalized before publishing signed releases.
+The remaining external gates are:
+
+1. Confirm the workplace macOS/architecture fleet and run the release-build soak measurement.
+2. Install the Developer ID certificate, generate the Sparkle key, and validate signing, notarization, appcast, and update installation.
+3. Revisit the provisional-name clearance scope only before promotion beyond the intended workplace-focused V1.
 
 ## 3. Decisions completed now
 
@@ -27,13 +30,15 @@ Two implementation gates remain intentionally open:
 - [x] Use a native Swift/SwiftUI menu-bar application and shared Swift packages.
 - [x] Use SQLite/GRDB as a local, user-owned evidence ledger.
 - [x] Keep durable source evidence separate from rebuildable interpretation.
-- [x] Use injected clocks and schedulers for live operation, backfill, and simulation.
+- [x] Use injected wall clocks and explicit cutoffs for collection/backfill/simulation, with one app-owned cadence loop and deterministic scheduled-period policy.
 - [x] Use one app-owned scheduler; do not introduce a daemon in V1.
-- [x] Use a small versioned local Unix socket for app–CLI control operations.
+- [x] Keep V1 process coordination minimal: shared queries plus a database-backed collection lease; defer IPC until app-control commands require it.
+- [x] Provide an optional provider-neutral normalized lifecycle bridge for low-latency state while keeping persisted caches authoritative for recovery and backfill; defer raw provider-hook adapters and configuration mutation.
+- [x] Normalize and deduplicate hook and cache observations through one source-evidence contract.
 - [x] Use `~/Library/Application Support/Trackify/` as the canonical data root.
 - [x] Target macOS 14 or later provisionally and build Universal 2 release artifacts.
 - [x] Distribute a non-App-Sandbox, hardened-runtime Developer ID application.
-- [x] Use user-only filesystem permissions for the ledger, configuration, runtime socket, backups, and logs.
+- [x] Use user-only filesystem permissions for the ledger, configuration, hook inbox, backups, and logs.
 - [x] Make V1 local-first with no Trackify analytics or automatic crash-report upload.
 - [x] Send only bounded, deterministically redacted evidence packets through the explicitly selected report provider.
 - [x] Rely on user-only permissions and FileVault for at-rest protection in V1 rather than adding application-level database encryption.
@@ -108,9 +113,11 @@ This is the highest-priority implementation validation.
 
 - [x] Define the smallest normalized source-evidence contract both adapters can support honestly.
 - [x] Decide which tool payloads are normalized and which are discarded.
-- [ ] Test file replacement, cache rotation, duplicates, and large version changes during implementation; truncated final-line behavior is fixture-covered.
+- [x] Test file replacement, in-place truncation, duplicates, large streamed histories, and truncated final-line recovery; future provider format versions still require a fixture before support is advertised.
 - [x] Prepare only deterministic sanitized fixtures for the public repository.
-- [ ] Freeze migration 1 only after both adapters pass their contract fixtures.
+- [x] Define the hook bridge as a bounded local structural-event path that cannot block provider work or replace cache reconciliation.
+- [x] Test synthetic allowlisted Codex and Claude hook envelopes and dual-path hook/cache deduplication without retaining real hook payloads.
+- [x] Freeze migration 1 only after both adapters pass their contract fixtures.
 
 V1 does not require identical richness from Codex and Claude. Missing lifecycle signals remain explicit unknowns rather than inferred completions.
 
@@ -141,28 +148,17 @@ Still required:
 - [ ] Generate the final Sparkle key during release-pipeline setup; feed URL is `https://vucinatim.github.io/trackify/appcast.xml`.
 - [x] Fixture baseline: Codex CLI `0.147.0-alpha.1.2` and Claude Code `2.1.29`; support is schema-fingerprint based.
 
-## 8. App–CLI control contract
+## 8. App–CLI coordination contract
 
-Read-only CLI queries continue to read the SQLite ledger through shared store code. Operations owned by the running application—pause, resume, refresh, update, scheduler state, and graceful shutdown—use a versioned local control endpoint:
-
-```text
-~/Library/Application Support/Trackify/Runtime/control.sock
-```
+Read-only CLI queries read the SQLite ledger through shared store code. One-shot collection and rebuild operations use a database-backed lease. App-only lifecycle actions remain in the app for V1; there is no always-listening local IPC surface.
 
 Requirements:
 
-- [x] Unix-domain only; no TCP listener or remote API.
-- [x] Parent directory mode `0700`; socket accessible only to the current user.
-- [x] Versioned request and response envelopes.
-- [x] Stable request identifiers for asynchronous operations.
-- [x] Bounded message sizes and strict decoding.
 - [x] The app remains the only continuous scheduler owner.
-- [x] Business logic stays in shared use cases rather than the socket handler.
-- [x] If the app is absent, an app-owned operation launches it; one-shot CLI collection may proceed only after acquiring the database lease.
-- [ ] Prototype launch, connect, reconnect-after-sleep, stale-socket cleanup, and app-relaunch behavior.
-- [ ] Add contract and permission tests before exposing mutating CLI commands.
+- [x] One-shot CLI collection proceeds only after acquiring the database lease.
+- [x] UI and CLI business logic stays in shared engine/store use cases.
 
-This control socket is not a daemon and does not contain a second implementation of application behavior.
+An IPC endpoint remains a later addition if remote pause/update control becomes a proven need.
 
 ## 9. Resource budgets
 
@@ -175,19 +171,20 @@ Initial budgets are acceptance targets, not user configuration:
 | Bounded backfill resident memory | Below 350 MB; import must stream rather than load full history |
 | Repository inspection concurrency | Maximum 4 concurrent Git inspections |
 | Report-provider concurrency | 1 provider process by default |
-| Idle full-root reconciliation | No more often than every 15 minutes; event-driven updates remain primary |
+| Idle full-root reconciliation | No more often than every 30 minutes; hooks and manual refresh provide lower latency |
 | Event burst handling | Debounced and coalesced before Git inspection |
 | Database growth | Visible in Diagnostics; backfill estimates required before large imports |
 | Network activity | Only update checks and explicitly enabled report-provider calls |
 
 Required validation:
 
-- [ ] Measure and adjust budgets using a release build rather than debug observations.
+- [x] Measure first-import and incremental Git budgets using the Universal release CLI; results are recorded in [VALIDATION.md](./VALIDATION.md).
 - [ ] Run a seven-day soak scenario with at least 60 repositories.
 - [ ] Include active agents, no-activity periods, sleep/wake, moved repositories, large working trees, backfill, and provider failure.
-- [ ] Confirm no unbounded in-memory transcript, filesystem-tree, diff, or report queue.
+- [x] Confirm no unbounded in-memory transcript, filesystem-tree, diff, or report queue; imports stream in capped batches, smart-compiled evidence is capped at 20 KiB, and provider prompts retain a 256 KiB defense-in-depth cap.
+- [x] Bound subprocess output and execution time; provider runs use 180-second deadlines, login probes use 5 seconds, and timed-out children are terminated and reaped.
 - [ ] Confirm missed work is reconciled after throttling, restart, and sleep.
-- [ ] Record benchmark hardware and dataset characteristics with each result.
+- [x] Record benchmark hardware and dataset characteristics with each result.
 
 Budget changes require evidence from profiling; they do not become exposed preferences in V1.
 
@@ -203,25 +200,25 @@ Before making the repository the canonical public project:
 - [x] Add sanitized fixtures and an automated privacy check that rejects personal paths and credential patterns.
 - [x] Enable GitHub secret scanning, push protection, and private vulnerability reporting.
 - [x] Protect `main`, require pull requests and the fixture-privacy check, enforce linear history and resolved conversations, and block force pushes and deletion.
-- [ ] Add required Swift build/test checks when the package is scaffolded.
-- [ ] Keep signing, notarization, and Sparkle private keys only in a protected release environment.
-- [ ] Define supported-version and security-reporting expectations.
-- [ ] Produce an SBOM with signed releases.
+- [x] Add required Swift build/test, simulation, fixture-privacy, and native bundle checks.
+- [x] Release automation references signing, notarization, and Sparkle secrets only through the protected `release` environment; credentials still need to be provisioned by the owner.
+- [x] Support the latest stable release line only until explicitly expanded, and use private GitHub vulnerability reporting without promising an unpublished response SLA.
+- [x] Generate and attach a SwiftPM dependency SBOM in the protected release workflow; first signed output remains pending credentials.
 
 No contributor agreement or DCO is required for the first personal release. Add one only if contribution volume or ownership requirements make it necessary.
 
 ## 11. Before signed V1 release
 
 - [ ] All V1 acceptance criteria in [V1.md](./V1.md) pass.
-- [ ] Compatibility fixtures cover every advertised source version.
-- [ ] Privacy packet-redaction tests pass with adversarial secret fixtures.
+- [x] Compatibility fixtures cover every advertised source version.
+- [x] Report redaction and allowlisted diagnostic export tests reject known synthetic secrets and private paths.
 - [ ] Resource budgets and seven-day soak test pass.
 - [ ] Clean install, upgrade, repair, and uninstall pass on every supported architecture.
-- [ ] Database migration and recovery tests pass from every supported schema.
+- [x] Database migration and private pre-migration backup tests pass from every currently supported schema.
 - [ ] App, CLI, manifest, appcast, tag, and release notes report the same version.
 - [ ] Developer ID signing, hardened runtime, notarization, stapling, Gatekeeper, and Sparkle verification pass.
-- [ ] The name gate is consciously accepted for the intended release scope.
-- [ ] The public documentation clearly explains local storage and provider-bound reporting evidence.
+- [x] The user consciously accepted `Trackify` for the intended workplace-focused V1; broader promotion still requires the expanded clearance checklist above.
+- [x] The public documentation clearly explains local storage and provider-bound reporting evidence.
 
 ## 12. Explicitly not blocking V1
 
@@ -246,6 +243,7 @@ compatibility fixture capture
 → Swift package and CLI scaffold
 → clock, identifiers, store, and migration harness
 → import one Git repository and one session from each provider
+→ ingest one lifecycle hook from each provider and reconcile it with the same cached session
 → run a deterministic two-day simulation
 → verify backfill and rebuild idempotency
 → freeze migration 1

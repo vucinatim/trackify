@@ -40,4 +40,11 @@ bash scripts/check-fixture-privacy.sh
 - Keep JSON CLI output versioned and backward-compatible within a major version.
 - Update the relevant design document when changing a public contract.
 
-Build and test commands will be added here when the Swift workspace is scaffolded.
+Run the canonical local checks before opening a pull request:
+
+```bash
+swift format lint --recursive --strict Sources Tests Apps Package.swift
+swift test
+scripts/check-fixture-privacy.sh
+git diff --check
+```
