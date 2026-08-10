@@ -86,9 +86,11 @@ public struct GitSourceAdapter: SourceAdapter {
         var records: [CollectedRecord] = []
         var stateFingerprints = previous?.stateFingerprints ?? [:]
         var stateRevisions = previous?.stateRevisions ?? [:]
+        var openedUnitFingerprints: [String] = []
 
         for candidate in candidates where candidate.kind != .bare {
             let inspection = try git.inspect(candidate)
+            openedUnitFingerprints.append(StableHash.sha256(inspection.root.path))
             let repositoryIdentity = inspection.remoteIdentity ?? inspection.commonDirectory.path
             let repositoryID = RepositoryID(StableHash.sha256("repository:\(repositoryIdentity)"))
             let workingCopyID = WorkingCopyID(StableHash.sha256("working-copy:\(inspection.root.path)"))
@@ -227,6 +229,13 @@ public struct GitSourceAdapter: SourceAdapter {
             commits: commits,
             reachableCommitHashesByRepository: reachableCommitHashesByRepository,
             records: records,
+            readMetrics: CollectionReadMetrics(
+                unit: .repository,
+                candidatesConsidered: candidates.count,
+                openedUnitFingerprints: openedUnitFingerprints,
+                bytesRead: nil,
+                recordsObserved: records.count,
+                recordsAccepted: records.count),
             nextCursor: cursorValue
         )
     }

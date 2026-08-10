@@ -119,7 +119,7 @@ V1 explicitly requests `gpt-5.6-sol` with medium reasoning rather than inheritin
 
 Trackify exposes four stable selection modes:
 
-1. `automatic`: choose the first ready provider in deterministic Codex-then-Claude order.
+1. `automatic`: choose the first ready provider in deterministic Codex-then-Claude order, then an installed provider with unknown authentication when none is ready.
 2. `codex`: invoke Codex only; failure falls back to a local artifact, never Claude.
 3. `claude`: invoke Claude only; failure falls back to a local artifact, never Codex.
 4. `local_only`: create deterministic artifacts and invoke no provider.
@@ -137,18 +137,50 @@ Example configuration:
 ```json
 {
   "providerSelection": "claude",
-  "scheduledModelReportsEnabled": true,
+  "automaticSummariesUseLLM": true,
   "generationBudgets": {
-    "maximumInputBytesPerCall": 20480,
-    "maximumEstimatedInputTokensPerCall": 24000,
-    "maximumCallsPerDay": 8,
-    "dailyTokenLimit": 50000,
+    "version": 2,
+    "maximumInputBytesPerCall": 262144,
+    "maximumEstimatedInputTokensPerCall": 100000,
+    "maximumCallsPerDay": 30,
+    "dailyTokenLimit": 1000000,
+    "monthlyTokenLimit": 20000000,
+    "weeklyAllowancePercentLimit": 3,
+    "weeklyCreditLimit": 500,
+    "estimatedOutputTokensPerCall": 2000,
     "processDeadlineSeconds": 180
   }
 }
 ```
 
-Provider detection does not equate executable presence with proven authentication. It checks login state when the observed CLI exposes a bounded non-interactive status command and otherwise reports that authentication is unknown until a real report invocation verifies access.
+Agents and users can inspect or update the same policy through the CLI:
+
+```bash
+trackify usage budget
+trackify usage budget --json
+trackify usage configure --weekly-percent 3 --weekly-credits 500
+trackify usage configure --defaults
+```
+
+Provider detection does not equate executable presence with proven authentication. It checks login state when the observed CLI exposes a bounded non-interactive status command and otherwise reports that authentication is unknown. When AI generation is enabled, the first automatic generation is also the readiness verification: success promotes the provider to ready, while a classified authentication failure falls back locally and marks it unavailable. This avoids requiring a separate provider test before automatic summaries can work.
+
+All app, CLI, summary, report, and provider-test invocations share one durable generation lease. Concurrent refreshes coalesce before launching a provider, preventing duplicate model calls and budget races across processes.
+
+Codex additionally exposes its rolling allowance through the local app-server
+protocol. Trackify reads `account/rateLimits/read` without accessing credential
+files and records the allowance immediately before and after each Trackify-owned
+generation. Positive percentage changes inside that invocation are attributed
+conservatively to Trackify. Unrelated Codex usage between Trackify calls is not
+attributed. If the method is missing or incompatible, generation continues under
+Trackify's provider-credit and burst safeguards.
+
+The menu and Settings surfaces derive pause state only from the current budget
+snapshot. Historical fallback runs remain visible in run history but never
+become live status. The app polls the current configuration and allowance every
+30 seconds; a configuration change or paused-to-available transition triggers a
+bounded summary refresh. Existing budget fallbacks are upgraded only when their
+exact request now passes preflight, so recovery is immediate without repeated
+fallback revisions while the same request remains blocked.
 
 ## 7. Authentication
 
@@ -173,27 +205,26 @@ Codex authentication may use ChatGPT sign-in or an API key. Trackify reuses the 
 
 ### Claude
 
-Trackify checks the newest Claude Desktop-bundled Code CLI first, then
-`~/.local/bin/claude`, then `PATH`. This matters because Desktop and terminal
-installations may have different versions or authentication contexts. The
-effective executable and version are visible in Preferences and CLI status.
+Trackify enumerates the user's standalone Claude CLI, `PATH`, and supported
+Claude Desktop-bundled Code CLIs. It runs the bounded `claude auth status` probe
+where supported and selects an authenticated candidate before falling back to an
+installed one for diagnostics. The effective executable and version are visible
+in Settings and CLI status.
 
-Observed Claude Code releases do not expose a bounded non-interactive
-authentication-status subcommand. Running an undocumented auth command may open
-the interactive CLI, so Trackify deliberately does not invoke it during passive
-health checks. Executable discovery therefore reports `authentication_unknown`;
-the explicit synthetic test or first enabled report verifies access and records
-authentication failure, timeout, or success without exposing provider output.
-The latest durable success promotes Claude to ready for Automatic selection; an
-explicit authentication failure demotes it until a later successful test or
-invocation. Generic process failures and timeouts do not guess authentication.
+Claude Desktop history and Claude Code generation remain separate capabilities.
+A signed-in Desktop application may hold a private process/session context that
+is not available to a standalone Trackify process. Trackify never extracts,
+copies, proxies, or reads that credential context. When no independently
+authenticated candidate exists, Settings explains the distinction and offers
+the safe `claude auth login` command. A successful explicit Trackify invocation
+still provides durable readiness evidence; authentication failures demote the
+candidate, while generic process failures and timeouts do not guess.
 
-When a future supported Claude Code version exposes a documented non-interactive status command, the adapter may add a version-gated probe. Trackify never reads Claude credential or Keychain data directly.
-
-The observed Claude invocation remains:
+The bounded Claude discovery invocations are:
 
 ```bash
 claude --version
+claude auth status
 ```
 
 ### Authentication state
@@ -300,6 +331,11 @@ Summary providers receive an evidence packet, not unrestricted repository access
 
 The packet contains only a bounded, deterministically selected view of locally
 normalized evidence:
+
+- Repository IDs and named folder groups are resolved before ranking and byte
+  trimming. This prevents unrelated high-priority projects from consuming a
+  scoped report's packet. Declared scopes fail closed if they cannot be applied
+  before stable IDs are replaced with packet-local aliases.
 
 - Period, locally derived report state, and aggregate metrics.
 - At most 30 event digests for an hour or 12 day-level event digests for a day.
@@ -436,6 +472,11 @@ trackify providers test codex --json
 trackify sources status --json
 trackify usage runs --since 7d --json
 trackify recipes list --json
+trackify recipes duplicate daily-work-summary --id my-daily-summary
+trackify reports preview --template my-daily-summary --period today --json
+trackify reports generate --template my-daily-summary --period today \
+  --instructions "Focus on decisions and blockers" --json
+trackify reports list --since 7d --json
 trackify artifacts list --since 7d --json
 ```
 
@@ -546,3 +587,32 @@ The same test suite runs against mocked Codex and Claude process runners:
 14. Trackify never silently switches to another provider or billing context.
 15. Backfill planning estimates provider jobs and input tokens before report generation.
 16. Broad evidence import can complete without generating historical model reports.
+
+## 19. Goal 3 provider contract
+
+The earlier hourly/daily “report provider” sections describe the Goal 2 input
+compiler retained for configurable outputs. Automatic interpretation now uses
+the canonical summary service:
+
+- closed active half-hours are the only model-backed leaves;
+- every eligible user message and commit message is included completely across
+  bounded chunks;
+- assistant responses are capped at 1,200 characters per response and carry
+  original/included counts plus a truncation flag;
+- each generation returns both a detailed `summary` (up to 5,000 characters)
+  and a distinct `compactSummary` (up to 500 characters);
+- output includes explicit project summaries with intent, outcome, open-work,
+  and blocker lists;
+- Trackify validates lengths, unique/allowed evidence aliases, and structure,
+  then deterministically restores any evidenced project omitted by the model;
+- current/day parents consume all complete child summaries in chronological
+  order;
+- provider calls, measured tokens, unknown/known costs, failures, and local
+  fallbacks are persisted in `summary_runs` and aggregated with report usage;
+- provider unavailability never prevents a summary revision or evidence
+  collection.
+
+The app setting `automaticSummariesUseLLM` affects automatic summaries only.
+Configurable report templates and scheduled reporters use their own provider
+override or the selected provider mode. Automatic summary backfill is explicit,
+bounded by CLI/UI policy, fingerprint-idempotent, and can always run locally.

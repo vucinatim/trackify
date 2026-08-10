@@ -27,10 +27,12 @@ public struct CollectionBatch: Equatable, Sendable {
     public let repositories: [CollectedRepository]
     public let sessions: [ConversationSession]
     public let messages: [ConversationMessage]
+    public let conversationRecords: [NormalizedConversationRecord]
     public let commits: [GitCommit]
     public let reachableCommitHashesByRepository: [RepositoryID: Set<String>]
     public let records: [CollectedRecord]
     public let processedSourceRecords: Int
+    public let readMetrics: CollectionReadMetrics
     public let nextCursor: Data?
 
     public init(
@@ -38,21 +40,52 @@ public struct CollectionBatch: Equatable, Sendable {
         repositories: [CollectedRepository] = [],
         sessions: [ConversationSession] = [],
         messages: [ConversationMessage] = [],
+        conversationRecords: [NormalizedConversationRecord] = [],
         commits: [GitCommit] = [],
         reachableCommitHashesByRepository: [RepositoryID: Set<String>] = [:],
         records: [CollectedRecord],
         processedSourceRecords: Int = 0,
+        readMetrics: CollectionReadMetrics = .empty,
         nextCursor: Data? = nil
     ) {
         self.sourceKey = sourceKey
         self.repositories = repositories
         self.sessions = sessions
         self.messages = messages
+        self.conversationRecords = conversationRecords
         self.commits = commits
         self.reachableCommitHashesByRepository = reachableCommitHashesByRepository
         self.records = records
         self.processedSourceRecords = processedSourceRecords
+        self.readMetrics = readMetrics
         self.nextCursor = nextCursor
+    }
+}
+
+public struct CollectionReadMetrics: Codable, Equatable, Sendable {
+    public static let empty = CollectionReadMetrics()
+
+    public let unit: EvidenceSourceUnit
+    public let candidatesConsidered: Int
+    public let openedUnitFingerprints: [String]
+    public let bytesRead: Int?
+    public let recordsObserved: Int
+    public let recordsAccepted: Int
+
+    public init(
+        unit: EvidenceSourceUnit = .unknown,
+        candidatesConsidered: Int = 0,
+        openedUnitFingerprints: [String] = [],
+        bytesRead: Int? = nil,
+        recordsObserved: Int = 0,
+        recordsAccepted: Int = 0
+    ) {
+        self.unit = unit
+        self.candidatesConsidered = candidatesConsidered
+        self.openedUnitFingerprints = openedUnitFingerprints
+        self.bytesRead = bytesRead
+        self.recordsObserved = recordsObserved
+        self.recordsAccepted = recordsAccepted
     }
 }
 
@@ -88,6 +121,7 @@ public struct CollectionSummary: Codable, Equatable, Sendable {
     public let receivedCommits: Int
     public let receivedRecords: Int
     public let processedSourceRecords: Int
+    public let readMetrics: CollectionReadMetrics
     public let insertedObservations: Int
     public let insertedEvents: Int
 
@@ -99,6 +133,7 @@ public struct CollectionSummary: Codable, Equatable, Sendable {
         receivedCommits: Int,
         receivedRecords: Int,
         processedSourceRecords: Int,
+        readMetrics: CollectionReadMetrics = .empty,
         insertedObservations: Int,
         insertedEvents: Int
     ) {
@@ -109,6 +144,7 @@ public struct CollectionSummary: Codable, Equatable, Sendable {
         self.receivedCommits = receivedCommits
         self.receivedRecords = receivedRecords
         self.processedSourceRecords = processedSourceRecords
+        self.readMetrics = readMetrics
         self.insertedObservations = insertedObservations
         self.insertedEvents = insertedEvents
     }
@@ -139,6 +175,8 @@ public actor CollectionEngine {
     public func ingest(_ batch: CollectionBatch) throws -> CollectionSummary {
         var observations = 0
         var events = 0
+        let hiddenMessageIDs = Set(
+            batch.messages.filter { !ConversationMessageVisibility.isWorkEvidence($0) }.map(\.id))
 
         for collectedRepository in batch.repositories {
             try store.upsert(
@@ -153,10 +191,6 @@ public actor CollectionEngine {
             try store.upsert(session: session)
         }
 
-        for message in batch.messages {
-            try store.upsert(message: message)
-        }
-
         for commit in batch.commits {
             try store.upsert(commit: commit)
         }
@@ -169,14 +203,33 @@ public actor CollectionEngine {
             )
         }
 
-        for record in batch.records {
-            let result = try store.ingest(evidence: record.evidence, event: record.event)
-            if result.insertedObservation { observations += 1 }
-            if result.insertedEvent { events += 1 }
+        let visibleRecords = batch.records.filter { record in
+            guard let rawMessageID = record.event.payload["messageID"] else { return true }
+            return !hiddenMessageIDs.contains(MessageID(rawMessageID))
         }
-
-        if let nextCursor = batch.nextCursor {
-            try store.setCursor(nextCursor, for: batch.sourceKey, at: clock.now())
+        let hasConversationProjection =
+            !batch.messages.isEmpty || !batch.conversationRecords.isEmpty
+        if hasConversationProjection {
+            let result = try store.ingestConversationEvidenceBatch(
+                messages: batch.messages,
+                conversationRecords: batch.conversationRecords,
+                evidenceRecords: visibleRecords.map {
+                    LedgerEvidenceRecord(evidence: $0.evidence, event: $0.event)
+                },
+                sourceKey: batch.sourceKey,
+                nextCursor: batch.nextCursor,
+                observedAt: clock.now())
+            observations = result.insertedObservations
+            events = result.insertedEvents
+        } else {
+            for record in visibleRecords {
+                let result = try store.ingest(evidence: record.evidence, event: record.event)
+                if result.insertedObservation { observations += 1 }
+                if result.insertedEvent { events += 1 }
+            }
+            if let nextCursor = batch.nextCursor {
+                try store.setCursor(nextCursor, for: batch.sourceKey, at: clock.now())
+            }
         }
 
         return CollectionSummary(
@@ -187,6 +240,7 @@ public actor CollectionEngine {
             receivedCommits: batch.commits.count,
             receivedRecords: batch.records.count,
             processedSourceRecords: batch.processedSourceRecords,
+            readMetrics: batch.readMetrics,
             insertedObservations: observations,
             insertedEvents: events
         )

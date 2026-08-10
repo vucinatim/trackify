@@ -5,13 +5,16 @@ import TrackifyDomain
 public struct EnqueueReportRun: Sendable {
     public let run: ReportRun
     public let evidence: [(alias: String, evidenceID: EvidenceID, reason: String)]
+    public let summaries: [(alias: String, summaryID: SummaryID)]
 
     public init(
         run: ReportRun,
-        evidence: [(alias: String, evidenceID: EvidenceID, reason: String)] = []
+        evidence: [(alias: String, evidenceID: EvidenceID, reason: String)] = [],
+        summaries: [(alias: String, summaryID: SummaryID)] = []
     ) {
         self.run = run
         self.evidence = evidence
+        self.summaries = summaries
     }
 }
 
@@ -20,6 +23,7 @@ extension LedgerStore {
         try database.read { db in
             WorkIntelligenceCounts(
                 recipes: try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM report_recipes") ?? 0,
+                schedules: try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM report_schedules") ?? 0,
                 runs: try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM report_runs") ?? 0,
                 pendingRuns: try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM report_runs WHERE state = 'pending'") ?? 0,
                 runningRuns: try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM report_runs WHERE state = 'running'") ?? 0,
@@ -40,6 +44,109 @@ extension LedgerStore {
                     """
             )
             .map(Self.decodeRecipe)
+        }
+    }
+
+    public func reportTemplates() throws -> [ReportTemplate] {
+        try recipes().compactMap { recipe in
+            try recipeVersion(id: recipe.currentVersionID).map {
+                ReportTemplate(recipe: recipe, version: $0)
+            }
+        }
+    }
+
+    public func reportSchedules(enabledOnly: Bool = false) throws -> [ReportSchedule] {
+        try database.read { db in
+            try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT * FROM report_schedules
+                    WHERE (? = 0 OR is_enabled = 1)
+                    ORDER BY is_enabled DESC, name COLLATE NOCASE, id
+                    """,
+                arguments: [enabledOnly]
+            )
+            .map(Self.decodeSchedule)
+        }
+    }
+
+    public func reportSchedule(id: ReportScheduleID) throws -> ReportSchedule? {
+        try database.read { db in
+            try Row.fetchOne(
+                db, sql: "SELECT * FROM report_schedules WHERE id = ?",
+                arguments: [id.rawValue]
+            )
+            .map(Self.decodeSchedule)
+        }
+    }
+
+    @discardableResult
+    public func saveReportSchedule(
+        id: ReportScheduleID,
+        draft: ReportScheduleDraft,
+        now: Date
+    ) throws -> ReportSchedule {
+        let name = draft.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !name.isEmpty else {
+            throw LedgerStoreError.unsupportedValue(type: "ReportSchedule", value: "name is required")
+        }
+        let repositories = try encoder.encode(draft.repositoryIDs.map(\.rawValue))
+        let groups = try encoder.encode(draft.groupNames)
+        return try database.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO report_schedules (
+                        id, name, recipe_id, cadence, repository_ids_json,
+                        group_names_json, provider_mode_override, is_enabled,
+                        created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        name = excluded.name,
+                        recipe_id = excluded.recipe_id,
+                        cadence = excluded.cadence,
+                        repository_ids_json = excluded.repository_ids_json,
+                        group_names_json = excluded.group_names_json,
+                        provider_mode_override = excluded.provider_mode_override,
+                        is_enabled = excluded.is_enabled,
+                        updated_at = excluded.updated_at
+                    """,
+                arguments: [
+                    id.rawValue, name, draft.recipeID.rawValue, draft.cadence.rawValue,
+                    repositories, groups, draft.providerModeOverride?.rawValue,
+                    draft.isEnabled, now.timeIntervalSince1970, now.timeIntervalSince1970,
+                ])
+            return try Self.fetchSchedule(db, id: id)!
+        }
+    }
+
+    public func setReportScheduleEnabled(_ enabled: Bool, id: ReportScheduleID, now: Date) throws {
+        try database.write { db in
+            try db.execute(
+                sql: "UPDATE report_schedules SET is_enabled = ?, updated_at = ? WHERE id = ?",
+                arguments: [enabled, now.timeIntervalSince1970, id.rawValue])
+            guard db.changesCount == 1 else {
+                throw LedgerStoreError.unsupportedValue(type: "ReportSchedule", value: id.rawValue)
+            }
+        }
+    }
+
+    public func deleteReportSchedule(id: ReportScheduleID) throws {
+        try database.write { db in
+            try db.execute(sql: "DELETE FROM report_schedules WHERE id = ?", arguments: [id.rawValue])
+            guard db.changesCount == 1 else {
+                throw LedgerStoreError.unsupportedValue(type: "ReportSchedule", value: id.rawValue)
+            }
+        }
+    }
+
+    public func setRecipeEnabled(_ enabled: Bool, id: RecipeID) throws {
+        try database.write { db in
+            try db.execute(
+                sql: "UPDATE report_recipes SET is_enabled = ? WHERE id = ?",
+                arguments: [enabled, id.rawValue])
+            guard db.changesCount == 1 else {
+                throw LedgerStoreError.unsupportedValue(type: "ReportRecipe", value: id.rawValue)
+            }
         }
     }
 
@@ -85,7 +192,7 @@ extension LedgerStore {
         guard (100...2_000).contains(maximumCharacters) else {
             throw RecipeValidationError.invalidMaximumCharacters
         }
-        let sanitizedFocus = try customFocus.map(Self.validateCustomFocus)
+        let sanitizedFocus = try customFocus.map(ReportRecipeValidator.customFocus)
         let repositories = try encoder.encode(repositoryIDs.map(\.rawValue))
         let groups = try encoder.encode(groupNames)
         return try database.write { db in
@@ -160,20 +267,31 @@ extension LedgerStore {
                     ]
                 )
             }
-            let persistedID = try String.fetchOne(
+            for item in request.summaries {
+                try db.execute(
+                    sql: """
+                        INSERT OR IGNORE INTO report_run_summaries
+                            (report_run_id, alias, summary_id)
+                        VALUES (?, ?, ?)
+                        """,
+                    arguments: [
+                        request.run.id.rawValue, item.alias, item.summaryID.rawValue,
+                    ])
+            }
+            return try Self.fetchRun(db, id: request.run.id)!
+        }
+    }
+
+    public func reportRunSummaryIDs(id: ReportRunID) throws -> [SummaryID] {
+        try database.read { db in
+            let values = try String.fetchAll(
                 db,
                 sql: """
-                    SELECT id FROM report_runs
-                    WHERE period_start = ? AND period_end = ?
-                      AND recipe_version_id = ? AND intent = ?
+                    SELECT summary_id FROM report_run_summaries
+                    WHERE report_run_id = ? ORDER BY alias, summary_id
                     """,
-                arguments: [
-                    request.run.periodStart.timeIntervalSince1970,
-                    request.run.periodEnd.timeIntervalSince1970,
-                    request.run.recipeVersionID.rawValue,
-                    request.run.intent.rawValue,
-                ])!
-            return try Self.fetchRun(db, id: ReportRunID(persistedID))!
+                arguments: [id.rawValue])
+            return values.map { SummaryID($0) }
         }
     }
 
@@ -277,14 +395,20 @@ extension LedgerStore {
                 let row = try Row.fetchOne(
                     db,
                     sql: """
-                        SELECT state, failure_class, COALESCE(finished_at, started_at, queued_at) AS observed_at
-                        FROM report_runs
-                        WHERE requested_provider = ?
-                          AND (state = 'succeeded' OR failure_class = 'authentication')
+                        SELECT state, failure_class, observed_at FROM (
+                            SELECT id, state, failure_class,
+                                   COALESCE(finished_at, started_at, queued_at) AS observed_at
+                            FROM report_runs WHERE requested_provider = ?
+                            UNION ALL
+                            SELECT id, state, failure_class,
+                                   COALESCE(finished_at, started_at, queued_at) AS observed_at
+                            FROM summary_runs WHERE requested_provider = ?
+                        )
+                        WHERE state = 'succeeded' OR failure_class = 'authentication'
                         ORDER BY observed_at DESC, id DESC
                         LIMIT 1
                         """,
-                    arguments: [provider.rawValue])
+                    arguments: [provider.rawValue, provider.rawValue])
             else { return nil }
             let state = row["state"] as String
             let authentication: AuthenticationState =
@@ -312,7 +436,17 @@ extension LedgerStore {
                                        THEN CAST(cost_value AS REAL) ELSE 0 END), 0) AS cost,
                            MAX(cost_currency) AS currency,
                            COALESCE(MAX(CASE WHEN effective_provider IS NOT NULL AND cost_value IS NULL THEN 1 ELSE 0 END), 0) AS unknown_cost
-                    FROM report_runs
+                    FROM (
+                        SELECT input_tokens, cached_input_tokens, output_tokens,
+                               reasoning_tokens, cost_value, cost_currency,
+                               effective_provider, queued_at, started_at, finished_at, state
+                        FROM report_runs
+                        UNION ALL
+                        SELECT input_tokens, cached_input_tokens, output_tokens,
+                               reasoning_tokens, cost_value, cost_currency,
+                               effective_provider, queued_at, started_at, finished_at, state
+                        FROM summary_runs
+                    ) generation_runs
                     WHERE queued_at >= ? AND queued_at < ? AND effective_provider IS NOT NULL
                     """,
                 arguments: [start.timeIntervalSince1970, end.timeIntervalSince1970]
@@ -418,15 +552,56 @@ extension LedgerStore {
         }
     }
 
+    public func hasArtifact(period: DateInterval, scheduleID: ReportScheduleID) throws -> Bool {
+        try database.read { db in
+            (try Int.fetchOne(
+                db,
+                sql: """
+                    SELECT 1 FROM report_runs
+                    WHERE period_start = ? AND period_end = ?
+                      AND schedule_id = ? AND state IN ('succeeded', 'fallback')
+                    LIMIT 1
+                    """,
+                arguments: [
+                    period.start.timeIntervalSince1970, period.end.timeIntervalSince1970,
+                    scheduleID.rawValue,
+                ])) != nil
+        }
+    }
+
+    public func hasReportRun(period: DateInterval, scheduleID: ReportScheduleID) throws -> Bool {
+        try database.read { db in
+            (try Int.fetchOne(
+                db,
+                sql: """
+                    SELECT 1 FROM report_runs
+                    WHERE period_start = ? AND period_end = ? AND schedule_id = ?
+                    LIMIT 1
+                    """,
+                arguments: [
+                    period.start.timeIntervalSince1970, period.end.timeIntervalSince1970,
+                    scheduleID.rawValue,
+                ])) != nil
+        }
+    }
+
     public func providerInvocationCount(from start: Date, through end: Date) throws -> Int {
         try database.read { db in
             try Int.fetchOne(
                 db,
                 sql: """
-                    SELECT COUNT(*) FROM report_runs
-                    WHERE started_at >= ? AND started_at < ? AND effective_provider IS NOT NULL
+                    SELECT SUM(count) FROM (
+                        SELECT COUNT(*) AS count FROM report_runs
+                        WHERE started_at >= ? AND started_at < ? AND effective_provider IS NOT NULL
+                        UNION ALL
+                        SELECT COUNT(*) AS count FROM summary_runs
+                        WHERE started_at >= ? AND started_at < ? AND effective_provider IS NOT NULL
+                    )
                     """,
-                arguments: [start.timeIntervalSince1970, end.timeIntervalSince1970]) ?? 0
+                arguments: [
+                    start.timeIntervalSince1970, end.timeIntervalSince1970,
+                    start.timeIntervalSince1970, end.timeIntervalSince1970,
+                ]) ?? 0
         }
     }
 
@@ -435,16 +610,36 @@ extension LedgerStore {
             try Int.fetchOne(
                 db,
                 sql: """
-                    SELECT COALESCE(SUM(
-                        COALESCE(input_tokens, estimated_input_tokens, 0)
-                        + COALESCE(cached_input_tokens, 0)
-                        + COALESCE(output_tokens, 0)
-                        + COALESCE(reasoning_tokens, 0)
-                    ), 0)
-                    FROM report_runs
-                    WHERE queued_at >= ? AND queued_at < ? AND effective_provider IS NOT NULL
+                    SELECT COALESCE(SUM(tokens), 0) FROM (
+                        SELECT CASE
+                            WHEN effective_provider = 'codex'
+                            THEN COALESCE(input_tokens, estimated_input_tokens, 0)
+                                 + COALESCE(output_tokens, reasoning_tokens, 0)
+                            ELSE COALESCE(input_tokens, estimated_input_tokens, 0)
+                                 + COALESCE(cached_input_tokens, 0)
+                                 + COALESCE(output_tokens, 0)
+                                 + COALESCE(reasoning_tokens, 0)
+                        END AS tokens
+                        FROM report_runs
+                        WHERE queued_at >= ? AND queued_at < ? AND effective_provider IS NOT NULL
+                        UNION ALL
+                        SELECT CASE
+                            WHEN effective_provider = 'codex'
+                            THEN COALESCE(input_tokens, estimated_input_tokens, 0)
+                                 + COALESCE(output_tokens, reasoning_tokens, 0)
+                            ELSE COALESCE(input_tokens, estimated_input_tokens, 0)
+                                 + COALESCE(cached_input_tokens, 0)
+                                 + COALESCE(output_tokens, 0)
+                                 + COALESCE(reasoning_tokens, 0)
+                        END AS tokens
+                        FROM summary_runs
+                        WHERE queued_at >= ? AND queued_at < ? AND effective_provider IS NOT NULL
+                    )
                     """,
-                arguments: [start.timeIntervalSince1970, end.timeIntervalSince1970]) ?? 0
+                arguments: [
+                    start.timeIntervalSince1970, end.timeIntervalSince1970,
+                    start.timeIntervalSince1970, end.timeIntervalSince1970,
+                ]) ?? 0
         }
     }
 
@@ -511,6 +706,13 @@ extension LedgerStore {
         }
     }
 
+    public func destinations() throws -> [Destination] {
+        try database.read { db in
+            try Row.fetchAll(db, sql: "SELECT * FROM destinations ORDER BY name COLLATE NOCASE, id")
+                .map(Self.decodeDestination)
+        }
+    }
+
     @discardableResult
     public func recordDelivery(_ attempt: DeliveryAttempt) throws -> DeliveryAttempt {
         try database.write { db in
@@ -552,21 +754,6 @@ extension LedgerStore {
         }
     }
 
-    private static func validateCustomFocus(_ input: String) throws -> String {
-        let value = input.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard value.count <= 1_000 else { throw RecipeValidationError.focusTooLong }
-        let prohibited = [
-            "ignore previous", "ignore the policy", "use tools", "read files",
-            "read credentials", "show credentials", "full transcript", "raw transcript",
-            "system prompt", "execute command", "run command", "disable redaction",
-        ]
-        let lowercased = value.lowercased()
-        if let phrase = prohibited.first(where: lowercased.contains) {
-            throw RecipeValidationError.unsafeInstruction(phrase)
-        }
-        return SensitiveText.redact(value)
-    }
-
     private static func decodeRecipe(_ row: Row) -> ReportRecipe {
         ReportRecipe(
             id: RecipeID(row["id"] as String),
@@ -597,29 +784,31 @@ extension LedgerStore {
     }
 
     private static func insertRun(_ db: Database, run: ReportRun) throws {
+        let configuration = try run.configuration.map { try JSONEncoder().encode($0) }
         try db.execute(
             sql: """
                 INSERT OR IGNORE INTO report_runs
                     (id, recipe_id, recipe_version_id, period_start, period_end, intent,
                      selection_mode, requested_provider, requested_model, effective_provider,
                      effective_model, compiler_version, prompt_version, invocation_version,
-                     output_schema_version, input_bytes, estimated_input_tokens, input_tokens,
+                     output_schema_version, configuration_json, schedule_id, input_bytes, estimated_input_tokens, input_tokens,
                      cached_input_tokens, output_tokens, reasoning_tokens, cost_value,
                      cost_currency, cost_kind, billing_context, queued_at, started_at,
                      finished_at, state, failure_class, failure_detail, artifact_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-            arguments: runArguments(run))
+            arguments: runArguments(run, configuration: configuration))
     }
 
-    private static func runArguments(_ run: ReportRun) -> StatementArguments {
+    private static func runArguments(_ run: ReportRun, configuration: Data?) -> StatementArguments {
         let values: [(any DatabaseValueConvertible)?] = [
             run.id.rawValue, run.recipeID.rawValue, run.recipeVersionID.rawValue,
             run.periodStart.timeIntervalSince1970, run.periodEnd.timeIntervalSince1970,
             run.intent.rawValue, run.selectionMode.rawValue, run.requestedProvider?.rawValue,
             run.requestedModel, run.effectiveProvider?.rawValue, run.effectiveModel,
             run.compilerVersion, run.promptVersion, run.invocationVersion,
-            run.outputSchemaVersion, run.inputBytes, run.estimatedInputTokens,
+            run.outputSchemaVersion, configuration, run.scheduleID?.rawValue,
+            run.inputBytes, run.estimatedInputTokens,
             run.usage.inputTokens, run.usage.cachedInputTokens, run.usage.outputTokens,
             run.usage.reasoningTokens, run.usage.cost.map(String.init(describing:)),
             run.usage.currency, run.usage.costKind.rawValue, run.usage.billingContext,
@@ -637,6 +826,7 @@ extension LedgerStore {
 
     private static func decodeRun(_ row: Row) throws -> ReportRun {
         let costString: String? = row["cost_value"]
+        let configurationData: Data? = row["configuration_json"]
         return ReportRun(
             id: ReportRunID(row["id"] as String), recipeID: RecipeID(row["recipe_id"] as String),
             recipeVersionID: RecipeVersionID(row["recipe_version_id"] as String),
@@ -663,7 +853,36 @@ extension LedgerStore {
             state: try decodeEnum(row["state"], as: ReportRunState.self),
             failureClass: try optionalEnum(row["failure_class"], as: GenerationFailureClass.self),
             failureDetail: row["failure_detail"],
-            artifactID: (row["artifact_id"] as String?).map { ArtifactID($0) })
+            artifactID: (row["artifact_id"] as String?).map { ArtifactID($0) },
+            configuration: try configurationData.map {
+                try JSONDecoder().decode(ReportRunConfiguration.self, from: $0)
+            },
+            scheduleID: (row["schedule_id"] as String?).map { ReportScheduleID($0) }
+        )
+    }
+
+    private static func fetchSchedule(_ db: Database, id: ReportScheduleID) throws -> ReportSchedule? {
+        try Row.fetchOne(
+            db, sql: "SELECT * FROM report_schedules WHERE id = ?", arguments: [id.rawValue]
+        ).map(decodeSchedule)
+    }
+
+    private static func decodeSchedule(_ row: Row) throws -> ReportSchedule {
+        let repositoryData: Data = row["repository_ids_json"]
+        let groupData: Data = row["group_names_json"]
+        return ReportSchedule(
+            id: ReportScheduleID(row["id"] as String), name: row["name"],
+            recipeID: RecipeID(row["recipe_id"] as String),
+            cadence: try decodeEnum(row["cadence"], as: ReportScheduleCadence.self),
+            repositoryIDs: try JSONDecoder().decode([String].self, from: repositoryData).map {
+                RepositoryID($0)
+            },
+            groupNames: try JSONDecoder().decode([String].self, from: groupData),
+            providerModeOverride: try optionalEnum(
+                row["provider_mode_override"], as: ProviderSelectionMode.self),
+            isEnabled: row["is_enabled"],
+            createdAt: Date(timeIntervalSince1970: row["created_at"]),
+            updatedAt: Date(timeIntervalSince1970: row["updated_at"]))
     }
 
     private static func decodeArtifact(_ db: Database, row: Row) throws -> Artifact {

@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 
 public struct JSONLFileCursor: Codable, Equatable, Sendable {
@@ -18,19 +19,22 @@ public struct JSONLReadResult: Equatable, Sendable {
     public let ignoredPartialTailBytes: Int
     public let hasMoreData: Bool
     public let oversizedLineCount: Int
+    public let processedBytes: Int
 
     public init(
         lines: [Data],
         cursor: JSONLFileCursor,
         ignoredPartialTailBytes: Int,
         hasMoreData: Bool,
-        oversizedLineCount: Int = 0
+        oversizedLineCount: Int = 0,
+        processedBytes: Int = 0
     ) {
         self.lines = lines
         self.cursor = cursor
         self.ignoredPartialTailBytes = ignoredPartialTailBytes
         self.hasMoreData = hasMoreData
         self.oversizedLineCount = oversizedLineCount
+        self.processedBytes = processedBytes
     }
 
     public var processedRecordCount: Int { lines.count + oversizedLineCount }
@@ -62,12 +66,28 @@ public struct JSONLReader: Sendable {
         self.skipOversizedLines = skipOversizedLines
     }
 
+    /// `Data.firstIndex(of:)` dispatches through the generic Collection
+    /// implementation and becomes disproportionately expensive for large JSONL
+    /// records. JSONL delimiters are single bytes, so use libc's linear byte
+    /// search over the contiguous storage instead.
+    private func firstNewline(in data: Data) -> Data.Index? {
+        data.withUnsafeBytes { bytes in
+            guard let base = bytes.baseAddress,
+                let match = memchr(base, Int32(0x0A), bytes.count)
+            else { return nil }
+            let distance = base.distance(to: UnsafeRawPointer(match))
+            return data.index(data.startIndex, offsetBy: distance)
+        }
+    }
+
     public func read(
         _ url: URL,
         after previous: JSONLFileCursor? = nil,
-        maximumRecords: Int = .max
+        maximumRecords: Int = .max,
+        maximumBytes: Int = .max
     ) throws -> JSONLReadResult {
         precondition(maximumRecords > 0)
+        precondition(maximumBytes > 0)
         let attributes = try FileManager.default.attributesOfItem(atPath: url.path)
         let device = (attributes[.systemNumber] as? NSNumber)?.uint64Value ?? 0
         let inode = (attributes[.systemFileNumber] as? NSNumber)?.uint64Value ?? 0
@@ -91,7 +111,7 @@ public struct JSONLReader: Sendable {
             pending.append(chunk)
             while true {
                 if discardedOversizedBytes > 0 {
-                    guard let newline = pending.firstIndex(of: 0x0A) else {
+                    guard let newline = firstNewline(in: pending) else {
                         discardedOversizedBytes += pending.count
                         pending.removeAll(keepingCapacity: true)
                         continue readLoop
@@ -105,10 +125,14 @@ public struct JSONLReader: Sendable {
                         reachedRecordLimit = true
                         break readLoop
                     }
+                    if committedBytes >= UInt64(maximumBytes) {
+                        reachedRecordLimit = true
+                        break readLoop
+                    }
                     continue
                 }
 
-                guard let newline = pending.firstIndex(of: 0x0A) else { break }
+                guard let newline = firstNewline(in: pending) else { break }
                 let line = pending[..<newline]
                 let consumed = pending.distance(from: pending.startIndex, to: newline) + 1
                 if line.count > maximumLineBytes {
@@ -122,6 +146,10 @@ public struct JSONLReader: Sendable {
                         reachedRecordLimit = true
                         break readLoop
                     }
+                    if committedBytes >= UInt64(maximumBytes) {
+                        reachedRecordLimit = true
+                        break readLoop
+                    }
                     continue
                 }
                 if !line.isEmpty {
@@ -131,6 +159,10 @@ public struct JSONLReader: Sendable {
                 pending.removeFirst(consumed)
                 committedBytes += UInt64(consumed)
                 if lines.count + oversizedLineCount >= maximumRecords {
+                    reachedRecordLimit = true
+                    break readLoop
+                }
+                if committedBytes >= UInt64(maximumBytes) {
                     reachedRecordLimit = true
                     break readLoop
                 }
@@ -161,7 +193,8 @@ public struct JSONLReader: Sendable {
             cursor: JSONLFileCursor(device: device, inode: inode, offset: startOffset + committedBytes),
             ignoredPartialTailBytes: ignoredTailBytes,
             hasMoreData: reachedRecordLimit || startOffset + committedBytes < fileSize,
-            oversizedLineCount: oversizedLineCount
+            oversizedLineCount: oversizedLineCount,
+            processedBytes: Int(clamping: committedBytes)
         )
     }
 
@@ -171,7 +204,7 @@ public struct JSONLReader: Sendable {
         var pending = Data()
         while let chunk = try handle.read(upToCount: chunkBytes), !chunk.isEmpty {
             pending.append(chunk)
-            if let newline = pending.firstIndex(of: 0x0A) {
+            if let newline = firstNewline(in: pending) {
                 let line = pending[..<newline]
                 guard line.count <= maximumLineBytes else {
                     throw JSONLReaderError.lineTooLarge(limit: maximumLineBytes)

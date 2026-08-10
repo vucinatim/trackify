@@ -1,16 +1,18 @@
-import Charts
 import SwiftUI
 import TrackifyDomain
 import TrackifyEngine
 
 struct MainWindow: View {
     @ObservedObject var model: AppModel
-    @State private var selection: Section
+    @ObservedObject var updates: UpdateController
+    @ObservedObject var router: AppRouter
 
     enum Section: String, CaseIterable, Identifiable {
         case overview
         case activity
         case projects
+        case reports
+        case settings
 
         var id: Self { self }
         var title: String { rawValue.capitalized }
@@ -19,30 +21,27 @@ struct MainWindow: View {
             case .overview: "square.grid.2x2"
             case .activity: "list.bullet.rectangle"
             case .projects: "shippingbox"
+            case .reports: "doc.text"
+            case .settings: "gearshape"
             }
         }
     }
 
-    init(model: AppModel) {
-        self.model = model
-        let requested = ProcessInfo.processInfo.environment["TRACKIFY_UI_SCREEN"]
-            .flatMap(Section.init(rawValue:))
-        _selection = State(initialValue: requested ?? .overview)
-    }
-
     var body: some View {
         NavigationSplitView {
-            List(Section.allCases, selection: $selection) { section in
+            List(Section.allCases, selection: $router.selection) { section in
                 Label(section.title, systemImage: section.icon).tag(section)
             }
             .navigationTitle("Trackify")
             .navigationSplitViewColumnWidth(min: 178, ideal: 194, max: 220)
         } detail: {
             Group {
-                switch selection {
+                switch router.selection {
                 case .overview: OverviewView(model: model)
                 case .activity: ActivityView(model: model)
                 case .projects: ProjectsView(model: model)
+                case .reports: ReportsView(model: model)
+                case .settings: SettingsView(model: model, updates: updates)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
@@ -51,7 +50,7 @@ struct MainWindow: View {
     }
 }
 
-private enum DashboardRange: String, CaseIterable, Identifiable {
+enum DashboardRange: String, CaseIterable, Identifiable {
     case day = "Day"
     case week = "7 days"
     case month = "30 days"
@@ -66,12 +65,62 @@ private enum DashboardRange: String, CaseIterable, Identifiable {
     }
 }
 
+enum DashboardMetric: String, CaseIterable, Identifiable {
+    case evidenceHours = "evidence-hours"
+    case llmTurns = "llm-turns"
+    case commits
+    case committedLines = "committed-lines"
+
+    var id: Self { self }
+    var title: String {
+        switch self {
+        case .evidenceHours: "Evidence hours"
+        case .llmTurns: "LLM turns"
+        case .commits: "Commits"
+        case .committedLines: "Committed lines"
+        }
+    }
+    var trendTitle: String {
+        switch self {
+        case .evidenceHours: "Evidence items"
+        default: title
+        }
+    }
+    var hourlySubtitle: String { "\(trendTitle) by hour" }
+    var icon: String {
+        switch self {
+        case .evidenceHours: "clock.fill"
+        case .llmTurns: "sparkles"
+        case .commits: "point.topleft.down.to.point.bottomright.curvepath"
+        case .committedLines: "plus.forwardslash.minus"
+        }
+    }
+    var tint: Color {
+        switch self {
+        case .evidenceHours: .indigo
+        case .llmTurns: .purple
+        case .commits: .blue
+        case .committedLines: .green
+        }
+    }
+    func trendValue(_ snapshot: ActivitySnapshot) -> Int {
+        switch self {
+        case .evidenceHours: snapshot.evidenceCount
+        case .llmTurns: snapshot.llmTurns
+        case .commits: snapshot.commits
+        case .committedLines: snapshot.additions
+        }
+    }
+}
+
 private struct OverviewView: View {
     @ObservedObject var model: AppModel
     @State private var range: DashboardRange = .week
     @State private var selectedDate: Date?
     @State private var showingDatePicker = false
-    @State private var historicalHours: [HourActivity] = []
+    @State private var trendHours: [HourActivity] = []
+    @State private var isLoadingTrend = false
+    @State private var selectedMetric: DashboardMetric
     private let requestedRange: DashboardRange?
     private let requestedDate: Date?
 
@@ -82,10 +131,14 @@ private struct OverviewView: View {
         }
         let date = ProcessInfo.processInfo.environment["TRACKIFY_UI_DATE"]
             .flatMap { ISO8601DateFormatter().date(from: $0) }
+        let metric =
+            ProcessInfo.processInfo.environment["TRACKIFY_UI_METRIC"]
+            .flatMap(DashboardMetric.init(rawValue:)) ?? .evidenceHours
         requestedRange = requested
         requestedDate = date
         _range = State(initialValue: requested ?? .week)
         _selectedDate = State(initialValue: date.map { Calendar.current.startOfDay(for: $0) })
+        _selectedMetric = State(initialValue: metric)
     }
 
     private var effectiveDate: Date {
@@ -98,7 +151,12 @@ private struct OverviewView: View {
     }
 
     private var totals: ActivityTotals { ActivityTotals(selectedDays.map(\.activity)) }
-    private var selectedHours: [HourActivity] { isToday ? model.hours : historicalHours }
+    private var trendInterval: DateInterval {
+        let start = selectedDays.first?.date ?? effectiveDate
+        let finalDay = selectedDays.last?.date ?? effectiveDate
+        let end = Calendar.current.date(byAdding: .day, value: 1, to: finalDay) ?? finalDay
+        return DateInterval(start: start, end: end)
+    }
 
     var body: some View {
         ScrollView {
@@ -110,6 +168,11 @@ private struct OverviewView: View {
                 ) {
                     VStack(alignment: .trailing, spacing: 9) {
                         HStack(spacing: 6) {
+                            Button("Today") {
+                                selectedDate = Calendar.current.startOfDay(for: model.referenceNow)
+                            }
+                            .frame(width: 58)
+                            .disabled(isToday)
                             Button {
                                 moveSelection(by: -1)
                             } label: {
@@ -119,6 +182,7 @@ private struct OverviewView: View {
                                 showingDatePicker.toggle()
                             } label: {
                                 Label(dateButtonTitle, systemImage: "calendar")
+                                    .frame(width: 122)
                             }
                             .popover(isPresented: $showingDatePicker) {
                                 DatePicker(
@@ -141,9 +205,6 @@ private struct OverviewView: View {
                                 Image(systemName: "chevron.right")
                             }
                             .disabled(isToday)
-                            if !isToday {
-                                Button("Today") { selectedDate = Calendar.current.startOfDay(for: model.referenceNow) }
-                            }
                         }
                         Picker("Range", selection: $range) {
                             ForEach(DashboardRange.allCases) { Text($0.rawValue).tag($0) }
@@ -159,40 +220,47 @@ private struct OverviewView: View {
                         value: "\(totals.activeHours)h",
                         detail: rangeDetail(\.activeHours),
                         icon: "clock.fill",
-                        tint: .indigo
-                    )
+                        tint: .indigo,
+                        isSelected: selectedMetric == .evidenceHours
+                    ) { selectedMetric = .evidenceHours }
                     MetricCard(
                         title: "LLM turns",
                         value: totals.llmTurns.formatted(),
                         detail: rangeDetail(\.llmTurns),
                         icon: "sparkles",
-                        tint: .purple
-                    )
+                        tint: .purple,
+                        isSelected: selectedMetric == .llmTurns
+                    ) { selectedMetric = .llmTurns }
                     MetricCard(
                         title: "Commits",
                         value: totals.commits.formatted(),
                         detail: rangeDetail(\.commits),
                         icon: "point.topleft.down.to.point.bottomright.curvepath",
-                        tint: .blue
-                    )
+                        tint: .blue,
+                        isSelected: selectedMetric == .commits
+                    ) { selectedMetric = .commits }
                     MetricCard(
                         title: "Committed lines",
                         value: "+\(totals.additions.formatted())",
                         detail: "−\(totals.deletions.formatted()) · \(totals.filesChanged) files",
                         icon: "plus.forwardslash.minus",
-                        tint: .green
-                    )
+                        tint: .green,
+                        isSelected: selectedMetric == .committedLines
+                    ) { selectedMetric = .committedLines }
                 }
 
                 HStack(alignment: .top, spacing: 14) {
-                    Panel(title: "Activity trend", subtitle: trendSubtitle) {
+                    Panel(title: "Activity trend", subtitle: selectedMetric.hourlySubtitle) {
                         if selectedDays.isEmpty {
                             EmptyInline(text: "No activity history in this range")
+                        } else if trendHours.isEmpty && isLoadingTrend {
+                            EmptyInline(text: "Loading hourly activity…")
                         } else {
-                            ActivityTrendChart(
+                            OverviewTrendChart(
                                 range: range,
-                                days: selectedDays,
-                                hours: selectedHours
+                                metric: selectedMetric,
+                                interval: trendInterval,
+                                hours: trendHours
                             )
                             .frame(height: 190)
                         }
@@ -214,14 +282,14 @@ private struct OverviewView: View {
                 }
 
                 HStack(alignment: .top, spacing: 14) {
-                    Panel(title: "Reports in range", subtitle: "What was actually being worked on") {
-                        if reportsInRange.isEmpty {
-                            EmptyInline(text: "No report has been generated for this range")
+                    Panel(title: range == .day ? "Summary" : "Daily summaries", subtitle: "What was actually being worked on") {
+                        if summariesInRange.isEmpty {
+                            EmptyInline(text: "No summary is available for this range yet")
                         } else {
                             VStack(spacing: 0) {
-                                ForEach(Array(reportsInRange.prefix(4)), id: \.id) { report in
-                                    ReportSummaryRow(report: report, copy: model.copy)
-                                    if report.id != reportsInRange.prefix(4).last?.id { Divider() }
+                                ForEach(Array(summariesInRange.prefix(7)), id: \.id) { summary in
+                                    SummaryOverviewCard(summary: summary, copy: model.copy)
+                                    if summary.id != summariesInRange.prefix(7).last?.id { Divider() }
                                 }
                             }
                         }
@@ -265,15 +333,19 @@ private struct OverviewView: View {
                 if requestedRange == nil { range = .week }
             }
         }
-        .task(id: effectiveDate) {
-            guard !isToday else {
-                historicalHours = []
+        .task(id: trendQueryID) {
+            guard !selectedDays.isEmpty else {
+                trendHours = []
+                isLoadingTrend = false
                 return
             }
-            historicalHours = []
-            let loaded = await model.hourActivity(for: effectiveDate)
+            isLoadingTrend = true
+            if range == .day && isToday { trendHours = model.hours } else { trendHours = [] }
+            let interval = trendInterval
+            let loaded = await model.hourActivity(from: interval.start, through: interval.end)
             guard !Task.isCancelled else { return }
-            historicalHours = loaded
+            trendHours = loaded
+            isLoadingTrend = false
         }
     }
 
@@ -282,19 +354,34 @@ private struct OverviewView: View {
         isToday ? "Today · \(effectiveDate.formatted(.dateTime.weekday(.wide).month(.wide).day()))" : "Historical view"
     }
     private var dateButtonTitle: String {
-        isToday ? "Today" : effectiveDate.formatted(.dateTime.month(.abbreviated).day().year())
+        effectiveDate.formatted(.dateTime.month(.abbreviated).day().year())
     }
-    private var trendSubtitle: String {
-        range == .day ? "Evidence records by hour" : "Evidence hours by day"
+    private var trendQueryID: String {
+        "\(range.rawValue)|\(trendInterval.start.timeIntervalSince1970)|\(trendInterval.end.timeIntervalSince1970)|\(selectedDays.count)"
     }
     private var availableDateRange: ClosedRange<Date> {
         (model.historyDays.first?.date ?? effectiveDate)...Calendar.current.startOfDay(for: model.referenceNow)
     }
-    private var reportsInRange: [WorkReport] {
+    private var summariesInRange: [WorkSummary] {
+        if range == .day, isToday, let current = model.latestCurrentSummary {
+            return [current]
+        }
         guard let first = selectedDays.first?.date, let last = selectedDays.last?.date,
             let end = Calendar.current.date(byAdding: .day, value: 1, to: last)
         else { return [] }
-        return model.reports.filter { $0.periodStart >= first && $0.periodStart < end }
+        let candidates = model.summaries.filter {
+            $0.kind == .day && $0.periodStart >= first && $0.periodStart < end
+        }
+        let grouped = Dictionary(grouping: candidates) {
+            Calendar.current.startOfDay(for: $0.periodStart)
+        }
+        return grouped.values.compactMap { values in
+            values.max { lhs, rhs in
+                lhs.generatedAt == rhs.generatedAt
+                    ? lhs.revision < rhs.revision
+                    : lhs.generatedAt < rhs.generatedAt
+            }
+        }.sorted { $0.periodStart > $1.periodStart }
     }
     private var projectFocus: [(name: String, activeDays: Int)] {
         var counts: [RepositoryID: Int] = [:]
@@ -337,210 +424,6 @@ private struct ActivityTotals {
         additions = snapshots.reduce(0) { $0 + $1.additions }
         deletions = snapshots.reduce(0) { $0 + $1.deletions }
         filesChanged = snapshots.reduce(0) { $0 + $1.filesChanged }
-    }
-}
-
-private struct ActivityTrendPoint: Identifiable {
-    let date: Date
-    let value: Int
-    let activity: ActivitySnapshot
-    var id: Date { date }
-}
-
-private struct ActivityTrendChart: View {
-    let range: DashboardRange
-    let days: [CalendarActivity]
-    let hours: [HourActivity]
-    @State private var hoveredPoint: ActivityTrendPoint?
-
-    private var points: [ActivityTrendPoint] {
-        if range == .day {
-            return hours.map {
-                ActivityTrendPoint(date: $0.start, value: $0.activity.evidenceCount, activity: $0.activity)
-            }
-        }
-        return days.map {
-            ActivityTrendPoint(date: $0.date, value: $0.activeHours, activity: $0.activity)
-        }
-    }
-
-    var body: some View {
-        if points.isEmpty {
-            EmptyInline(text: range == .day ? "Loading hourly activity…" : "No activity history in this range")
-        } else {
-            Chart {
-                if range == .day {
-                    ForEach(points) { point in
-                        BarMark(
-                            x: .value("Hour", point.date, unit: .hour),
-                            y: .value("Evidence records", point.value)
-                        )
-                        .foregroundStyle(Color.accentColor.gradient)
-                        .cornerRadius(2)
-                    }
-                } else {
-                    ForEach(points) { point in
-                        AreaMark(
-                            x: .value("Day", point.date, unit: .day),
-                            y: .value("Evidence hours", point.value)
-                        )
-                        .foregroundStyle(
-                            .linearGradient(
-                                colors: [Color.accentColor.opacity(0.28), Color.accentColor.opacity(0.02)],
-                                startPoint: .top,
-                                endPoint: .bottom
-                            ))
-                        LineMark(
-                            x: .value("Day", point.date, unit: .day),
-                            y: .value("Evidence hours", point.value)
-                        )
-                        .foregroundStyle(Color.accentColor)
-                        .lineStyle(.init(lineWidth: 2, lineCap: .round, lineJoin: .round))
-                        PointMark(
-                            x: .value("Day", point.date, unit: .day),
-                            y: .value("Evidence hours", point.value)
-                        )
-                        .foregroundStyle(Color.accentColor)
-                        .symbolSize(20)
-                    }
-                }
-
-                if let hoveredPoint {
-                    RuleMark(
-                        x: .value(
-                            "Selected time",
-                            hoveredPoint.date,
-                            unit: range == .day ? .hour : .day
-                        )
-                    )
-                    .foregroundStyle(Color.secondary.opacity(0.55))
-                    .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
-                    .annotation(position: .top, spacing: 8) {
-                        ActivityTrendTooltip(point: hoveredPoint, hourly: range == .day)
-                    }
-                }
-            }
-            .chartXScale(domain: xDomain)
-            .chartYScale(domain: 0...max(4, points.map(\.value).max() ?? 4))
-            .chartYAxis { AxisMarks(position: .leading, values: .automatic(desiredCount: 4)) }
-            .chartXAxis {
-                if range == .day {
-                    AxisMarks(values: .stride(by: .hour, count: 6)) { value in
-                        AxisGridLine().foregroundStyle(.quaternary)
-                        AxisValueLabel {
-                            if let date = value.as(Date.self) {
-                                Text(date, format: .dateTime.hour(.twoDigits(amPM: .omitted)))
-                            }
-                        }
-                    }
-                } else {
-                    AxisMarks(values: axisDates) { value in
-                        AxisGridLine().foregroundStyle(.quaternary)
-                        AxisValueLabel {
-                            if let date = value.as(Date.self) {
-                                if range == .month {
-                                    Text(date, format: .dateTime.month(.abbreviated).day())
-                                } else {
-                                    Text(date, format: .dateTime.weekday(.narrow).day())
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-            .chartOverlay { proxy in
-                GeometryReader { geometry in
-                    Rectangle()
-                        .fill(.clear)
-                        .contentShape(Rectangle())
-                        .onContinuousHover { phase in
-                            updateHover(phase, proxy: proxy, geometry: geometry)
-                        }
-                }
-            }
-            .onDisappear { hoveredPoint = nil }
-        }
-    }
-
-    private var xDomain: ClosedRange<Date> {
-        guard let first = points.first?.date, let last = points.last?.date else {
-            return Date.distantPast...Date.distantFuture
-        }
-        if range == .day {
-            let end = Calendar.current.date(byAdding: .hour, value: 1, to: last) ?? last
-            return first...end
-        }
-        let start = Calendar.current.date(byAdding: .hour, value: -12, to: first) ?? first
-        let end = Calendar.current.date(byAdding: .hour, value: 12, to: last) ?? last
-        return start...end
-    }
-
-    private var axisDates: [Date] {
-        guard range == .month else { return points.map(\.date) }
-        var values = points.enumerated().compactMap { index, point in index.isMultiple(of: 5) ? point.date : nil }
-        if let last = points.last?.date, values.last != last { values.append(last) }
-        return values
-    }
-
-    private func updateHover(
-        _ phase: HoverPhase,
-        proxy: ChartProxy,
-        geometry: GeometryProxy
-    ) {
-        switch phase {
-        case .active(let location):
-            guard let plotFrame = proxy.plotFrame else { return }
-            let frame = geometry[plotFrame]
-            let x = location.x - frame.minX
-            guard x >= 0, x <= frame.width, let date: Date = proxy.value(atX: x) else {
-                hoveredPoint = nil
-                return
-            }
-            let nearest = points.min {
-                abs($0.date.timeIntervalSince(date)) < abs($1.date.timeIntervalSince(date))
-            }
-            if hoveredPoint?.id != nearest?.id { hoveredPoint = nearest }
-        case .ended:
-            hoveredPoint = nil
-        }
-    }
-}
-
-private struct ActivityTrendTooltip: View {
-    let point: ActivityTrendPoint
-    let hourly: Bool
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            Text(title).font(.caption.weight(.semibold))
-            Text(primaryDetail).font(.caption2).foregroundStyle(.secondary)
-            Text(secondaryDetail).font(.caption2).foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 9)
-        .padding(.vertical, 7)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
-        .overlay { RoundedRectangle(cornerRadius: 8).stroke(Color.secondary.opacity(0.2)) }
-        .shadow(color: .black.opacity(0.16), radius: 5, y: 2)
-        .fixedSize()
-    }
-
-    private var title: String {
-        if hourly {
-            let end = Calendar.current.date(byAdding: .hour, value: 1, to: point.date) ?? point.date
-            return "\(point.date.formatted(date: .omitted, time: .shortened))–\(end.formatted(date: .omitted, time: .shortened))"
-        }
-        return point.date.formatted(.dateTime.weekday(.wide).month(.abbreviated).day())
-    }
-
-    private var primaryDetail: String {
-        if hourly {
-            return "\(point.activity.evidenceCount) evidence · \(point.activity.llmTurns) turns · \(point.activity.commits) commits"
-        }
-        return "\(point.activity.activeHours) evidence hours · \(point.activity.llmTurns) turns · \(point.activity.commits) commits"
-    }
-
-    private var secondaryDetail: String {
-        "+\(point.activity.additions.formatted()) / −\(point.activity.deletions.formatted()) · \(point.activity.repositoryIDs.count) repositories"
     }
 }
 
@@ -654,7 +537,7 @@ private struct ActivityView: View {
 
     private enum ActivityFilter: String, CaseIterable, Identifiable {
         case all = "All"
-        case reports = "Reports"
+        case summaries = "Summaries"
         case commits = "Commits"
         case conversations = "Conversations"
         case changes = "Changes"
@@ -668,7 +551,7 @@ private struct ActivityView: View {
             let matchesKind: Bool
             switch filter {
             case .all: matchesKind = true
-            case .reports: matchesKind = entry.kind == .report
+            case .summaries: matchesKind = entry.kind == .summary
             case .commits: matchesKind = entry.kind == .commit
             case .conversations: matchesKind = entry.kind == .conversation
             case .changes: matchesKind = entry.kind == .change || entry.kind == .test
@@ -687,11 +570,11 @@ private struct ActivityView: View {
         let visibleEntries = entries
         let dayGroups = groupedDays(visibleEntries)
         let repositoryNames = repositoryNamesByID
-        let reports = reportsByID
+        let summaries = summariesByID
 
         VStack(spacing: 0) {
             PageHeader(
-                eyebrow: "Reports and concrete evidence",
+                eyebrow: "Summaries and concrete evidence",
                 title: "Activity",
                 subtitle: "Search and filter the chronological work ledger"
             ) {
@@ -727,8 +610,8 @@ private struct ActivityView: View {
                             SwiftUI.Section {
                                 ForEach(group.entries) { entry in
                                     Group {
-                                        if entry.kind == .report, let report = reports[entry.id] {
-                                            ReportActivityCard(report: report, copy: model.copy)
+                                        if entry.kind == .summary, let summary = summaries[entry.id] {
+                                            SummaryActivityCard(summary: summary, copy: model.copy)
                                         } else {
                                             TimelineRow(
                                                 entry: entry,
@@ -761,9 +644,9 @@ private struct ActivityView: View {
         for item in model.repositories { result[item.repository.id] = item.repository.displayName }
         return result
     }
-    private var reportsByID: [String: WorkReport] {
-        var result: [String: WorkReport] = [:]
-        for report in model.reports { result[report.id.rawValue] = report }
+    private var summariesByID: [String: WorkSummary] {
+        var result: [String: WorkSummary] = [:]
+        for summary in model.summaries { result[summary.id.rawValue] = summary }
         return result
     }
     private func messageRoleSearchText(_ role: MessageRole?) -> String {
@@ -775,17 +658,17 @@ private struct ActivityView: View {
     }
     private var emptyTitle: String {
         if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return "No matching activity" }
-        return filter == .reports ? "No reports yet" : "No activity yet"
+        return filter == .summaries ? "No summaries yet" : "No activity yet"
     }
-    private var emptyIcon: String { filter == .reports ? "doc.text" : "list.bullet.rectangle" }
+    private var emptyIcon: String { filter == .summaries ? "text.document" : "list.bullet.rectangle" }
     private var emptyDescription: String {
-        if filter == .reports {
-            return "Reports appear here after an evidence-backed period is generated. Other activity remains available independently."
+        if filter == .summaries {
+            return "Automatic summaries appear here as the evidence-backed timeline develops."
         }
         if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || filter != .all {
             return "Try a different filter or search term."
         }
-        return "Collected commits, conversations, reports, and working-copy changes will appear here automatically."
+        return "Collected commits, conversations, summaries, and working-copy changes will appear here automatically."
     }
 }
 
@@ -852,7 +735,7 @@ private struct TimelineRow: View {
 
     private var icon: String {
         switch entry.kind {
-        case .report: "doc.text.fill"
+        case .summary: "text.document.fill"
         case .commit: "point.topleft.down.to.point.bottomright.curvepath"
         case .conversation: entry.messageRole == .user ? "person.fill" : "sparkles"
         case .change: "pencil.and.list.clipboard"
@@ -861,7 +744,7 @@ private struct TimelineRow: View {
     }
     private var tint: Color {
         switch entry.kind {
-        case .report: .indigo
+        case .summary: .indigo
         case .commit: .blue
         case .conversation: entry.messageRole == .user ? .blue : .purple
         case .change: .orange
@@ -870,8 +753,8 @@ private struct TimelineRow: View {
     }
 }
 
-private struct ReportActivityCard: View {
-    let report: WorkReport
+private struct SummaryActivityCard: View {
+    let summary: WorkSummary
     let copy: (String) -> Void
     @State private var expanded = false
 
@@ -879,24 +762,34 @@ private struct ReportActivityCard: View {
         VStack(alignment: .leading, spacing: 11) {
             HStack(spacing: 8) {
                 Image(systemName: "doc.text.fill").foregroundStyle(.indigo)
-                Text("Report").font(.caption.weight(.semibold)).foregroundStyle(.indigo)
-                StateBadge(state: report.state.rawValue)
+                Text("Summary").font(.caption.weight(.semibold)).foregroundStyle(.indigo)
+                StateBadge(state: summary.state.rawValue)
                 Spacer()
-                Text(report.periodStart, format: .dateTime.hour().minute())
+                Text(summary.periodEnd, format: .dateTime.hour().minute())
                     .font(.caption.monospacedDigit()).foregroundStyle(.tertiary)
             }
-            Text(report.summary).font(.body.weight(.medium)).lineLimit(expanded ? nil : 4)
+            Text(summary.content.narrative).font(.body.weight(.medium)).lineLimit(expanded ? nil : 4)
+            if expanded, !summary.content.projectSections.isEmpty {
+                VStack(alignment: .leading, spacing: 10) {
+                    ForEach(summary.content.projectSections, id: \.project) { section in
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text(section.project).font(.caption.weight(.semibold)).foregroundStyle(.indigo)
+                            Text(section.narrative).font(.callout).foregroundStyle(.secondary)
+                        }
+                    }
+                }
+            }
             HStack {
-                Label("\(report.evidenceIDs.count) evidence records", systemImage: "list.bullet.rectangle")
+                Label("\(summary.coverage.coveredEventCount) covered events", systemImage: "list.bullet.rectangle")
                 if expanded {
                     Text("·")
-                    Text(report.provider ?? "Local fallback")
-                    if let model = report.model { Text("· \(model)") }
+                    Text(summary.provider?.rawValue.capitalized ?? "Local")
+                    if let model = summary.model { Text("· \(model)") }
                 }
                 Spacer()
                 Button(expanded ? "Less" : "Details") { expanded.toggle() }.buttonStyle(.link)
                 Button {
-                    copy(report.summary)
+                    copy(summary.content.narrative)
                 } label: {
                     Image(systemName: "doc.on.doc")
                 }
@@ -1068,7 +961,7 @@ private struct ProjectDetail: View {
 
     private func projectIcon(_ entry: TimelineEntry) -> String {
         switch entry.kind {
-        case .report: "doc.text"
+        case .summary: "text.document"
         case .commit: "point.topleft.down.to.point.bottomright.curvepath"
         case .conversation: entry.messageRole == .user ? "person.fill" : "sparkles"
         case .change: "pencil.and.list.clipboard"
@@ -1082,7 +975,7 @@ private struct ProjectDetail: View {
         case .commit: .blue
         case .change: .orange
         case .test: entry.state == "failed" ? .red : .green
-        case .report: .indigo
+        case .summary: .indigo
         }
     }
 }
@@ -1187,23 +1080,39 @@ private struct MetricCard: View {
     let detail: String
     let icon: String
     let tint: Color
+    let isSelected: Bool
+    let select: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            HStack {
-                Image(systemName: icon)
-                    .font(.caption.weight(.semibold)).foregroundStyle(tint)
-                    .frame(width: 28, height: 28)
-                    .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
-                Spacer()
-                Text(title).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+        Button(action: select) {
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Image(systemName: icon)
+                        .font(.caption.weight(.semibold)).foregroundStyle(tint)
+                        .frame(width: 28, height: 28)
+                        .background(tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                    Spacer()
+                    Text(title)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(isSelected ? tint : .secondary)
+                }
+                Text(value).font(.title2.bold().monospacedDigit())
+                Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
             }
-            Text(value).font(.title2.bold().monospacedDigit())
-            Text(detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            .padding(15)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(RoundedRectangle(cornerRadius: 14))
         }
-        .padding(15).frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 14))
-        .overlay { RoundedRectangle(cornerRadius: 14).stroke(Color.secondary.opacity(0.13), lineWidth: 1) }
+        .buttonStyle(.plain)
+        .background(
+            isSelected ? tint.opacity(0.075) : Color(nsColor: .controlBackgroundColor),
+            in: RoundedRectangle(cornerRadius: 14)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 14)
+                .stroke(isSelected ? tint.opacity(0.85) : Color.secondary.opacity(0.13), lineWidth: isSelected ? 2 : 1)
+        }
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 
@@ -1241,27 +1150,54 @@ private struct StateBadge: View {
     }
 }
 
-private struct ReportSummaryRow: View {
-    let report: WorkReport
+private struct SummaryOverviewCard: View {
+    let summary: WorkSummary
     let copy: (String) -> Void
+    @State private var expanded = true
 
     var body: some View {
-        HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .top, spacing: 12) {
                 HStack {
-                    Text(report.periodStart, format: .dateTime.month(.abbreviated).day().hour().minute())
+                    Text(summary.periodStart, format: .dateTime.month(.abbreviated).day())
                         .font(.caption.weight(.medium)).foregroundStyle(.secondary)
-                    StateBadge(state: report.state.rawValue)
+                    StateBadge(state: summary.state.rawValue)
                 }
-                Text(report.summary).font(.callout).lineLimit(2)
+                Spacer()
+                Text(summary.provider?.rawValue.capitalized ?? "Local")
+                    .font(.caption).foregroundStyle(.secondary)
+                Button {
+                    expanded.toggle()
+                } label: {
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                }
+                .buttonStyle(.borderless).help(expanded ? "Collapse summary" : "Expand summary")
+                Button {
+                    copy(summary.content.narrative)
+                } label: {
+                    Image(systemName: "doc.on.doc")
+                }
+                .buttonStyle(.borderless).help("Copy summary")
             }
-            Spacer()
-            Button {
-                copy(report.summary)
-            } label: {
-                Image(systemName: "doc.on.doc")
+            Text(summary.content.narrative)
+                .font(.callout)
+                .lineLimit(expanded ? nil : 3)
+                .textSelection(.enabled)
+            if expanded, !summary.content.projectSections.isEmpty {
+                VStack(alignment: .leading, spacing: 12) {
+                    ForEach(summary.content.projectSections, id: \.project) { section in
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(section.project)
+                                .font(.caption.weight(.bold)).foregroundStyle(.tint)
+                            Text(section.narrative).font(.callout).foregroundStyle(.secondary)
+                            if !section.openWork.isEmpty {
+                                Label(section.openWork.joined(separator: " · "), systemImage: "circle.lefthalf.filled")
+                                    .font(.caption).foregroundStyle(.blue)
+                            }
+                        }
+                    }
+                }
             }
-            .buttonStyle(.borderless).help("Copy summary")
         }
         .padding(.vertical, 10)
     }
@@ -1288,7 +1224,7 @@ struct SettingsView: View {
     @State private var selectedTab: SettingsTab
 
     private enum SettingsTab: String {
-        case sources, summaries, usage, recipes, general
+        case sources, summaries, usage, general
     }
 
     init(model: AppModel, updates: UpdateController) {
@@ -1305,14 +1241,11 @@ struct SettingsView: View {
                 .tabItem { Label("Sources", systemImage: "externaldrive") }
                 .tag(SettingsTab.sources)
             summariesView
-                .tabItem { Label("Summaries", systemImage: "sparkles") }
+                .tabItem { Label("AI Providers", systemImage: "sparkles") }
                 .tag(SettingsTab.summaries)
             usageView
                 .tabItem { Label("Usage", systemImage: "chart.bar") }
                 .tag(SettingsTab.usage)
-            recipesView
-                .tabItem { Label("Recipes", systemImage: "doc.text") }
-                .tag(SettingsTab.recipes)
             generalView
                 .tabItem { Label("General", systemImage: "gearshape") }
                 .tag(SettingsTab.general)
@@ -1326,6 +1259,30 @@ struct SettingsView: View {
 
     private var sourcesView: some View {
         Form {
+            SwiftUI.Section("Evidence quality") {
+                HStack {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(model.evidenceQuality.state == .healthy ? "Canonical evidence is healthy" : "Evidence needs attention")
+                        Text(
+                            "Projection v\(model.evidenceQuality.projectionVersion) · \(model.evidenceQuality.unresolvedRecordCount) unresolved · \(model.evidenceQuality.aliasRecordCount) aliases · \(model.evidenceQuality.replayRecordCount) replays"
+                        )
+                        .font(.caption).foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    CapabilityPill(
+                        text: model.evidenceQuality.state == .healthy ? "Healthy" : "Degraded",
+                        ready: model.evidenceQuality.state == .healthy)
+                }
+                ForEach(model.evidenceQuality.issues, id: \.id) { issue in
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(issue.code.replacingOccurrences(of: "-", with: " ").capitalized)
+                        Text("\(issue.detail) · \(issue.count)")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                Text("Diagnostics contain structural counts and compatibility labels only—never raw private message text.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             SwiftUI.Section("Conversation history") {
                 ForEach(model.sourceCapabilities) { source in
                     VStack(alignment: .leading, spacing: 4) {
@@ -1376,16 +1333,19 @@ struct SettingsView: View {
                 }
                 LabeledContent("Effective provider", value: model.effectiveProvider?.rawValue.capitalized ?? "Local only")
                 Toggle(
-                    "Use models for scheduled reports",
+                    "Use AI for automatic summaries",
                     isOn: Binding(
-                        get: { model.scheduledModelReportsEnabled },
-                        set: { value in Task { await model.setScheduledModelReportsEnabled(value) } }))
+                        get: { model.automaticSummariesUseLLM },
+                        set: { value in Task { await model.setAutomaticSummariesUseLLM(value) } }))
                 ForEach(model.generationCapabilities) { provider in
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(provider.id.rawValue.capitalized)
                             Text(provider.cliVersion ?? provider.executablePath ?? "Not installed")
                                 .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            if let detail = provider.detail {
+                                Text(detail).font(.caption2).foregroundStyle(.secondary).lineLimit(3)
+                            }
                         }
                         Spacer()
                         CapabilityPill(
@@ -1393,22 +1353,70 @@ struct SettingsView: View {
                             ready: provider.authentication == .ready)
                         Button("Test") { Task { await model.testProvider(provider.id) } }
                             .disabled(provider.executablePath == nil || model.isSummarizing)
+                        if provider.id == .claude, provider.authentication == .unavailable {
+                            Button("Copy login command") { model.copy("claude auth login") }
+                        }
                     }
                 }
                 Text("Tests send a tiny synthetic payload only. Trackify never reads or changes provider credentials or configuration.")
                     .font(.caption).foregroundStyle(.secondary)
             }
-            SwiftUI.Section("Budgets") {
-                Stepper("Calls per day: \(budgets.maximumCallsPerDay)", value: $budgets.maximumCallsPerDay, in: 0...48)
-                Stepper(
-                    "Daily tokens: \(budgets.dailyTokenLimit.formatted())", value: $budgets.dailyTokenLimit, in: 0...1_000_000, step: 5_000)
-                Stepper(
-                    "Per-call tokens: \(budgets.maximumEstimatedInputTokensPerCall.formatted())",
-                    value: $budgets.maximumEstimatedInputTokensPerCall, in: 500...100_000, step: 500)
-                Stepper("Deadline: \(budgets.processDeadlineSeconds)s", value: $budgets.processDeadlineSeconds, in: 15...600, step: 15)
+            SwiftUI.Section("Weekly AI budget") {
+                if let allowance = model.generationBudgetStatus.allowance {
+                    VStack(alignment: .leading, spacing: 6) {
+                        HStack {
+                            Text("Codex weekly allowance")
+                            Spacer()
+                            Text("\(allowance.remainingPercent)% left")
+                        }
+                        ProgressView(value: Double(allowance.remainingPercent), total: 100)
+                        if let reset = allowance.resetsAt {
+                            Text("Resets \(reset.formatted(date: .abbreviated, time: .shortened))")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
+                } else {
+                    LabeledContent("Provider allowance", value: "Not exposed")
+                }
+                LabeledContent("Trackify weekly target") {
+                    TextField("Percent", value: weeklyAllowanceBinding, format: .number)
+                        .multilineTextAlignment(.trailing).frame(width: 72)
+                    Text("%").foregroundStyle(.secondary)
+                }
+                LabeledContent("Credit safeguard") {
+                    TextField("Credits", value: weeklyCreditsBinding, format: .number)
+                        .multilineTextAlignment(.trailing).frame(width: 92)
+                    Text("credits").foregroundStyle(.secondary)
+                }
+                Text(
+                    "Trackify measures its own calls and, when Codex exposes it, the actual weekly subscription percentage before and after each generation. Your unrelated Codex work is not charged to Trackify."
+                )
+                .font(.caption).foregroundStyle(.secondary)
+            }
+            SwiftUI.Section("Safety limits") {
+                LabeledContent("Calls per day") {
+                    TextField("Calls", value: $budgets.maximumCallsPerDay, format: .number)
+                        .multilineTextAlignment(.trailing).frame(width: 92)
+                }
+                LabeledContent("Input tokens per call") {
+                    TextField(
+                        "Tokens", value: $budgets.maximumEstimatedInputTokensPerCall,
+                        format: .number
+                    )
+                    .multilineTextAlignment(.trailing).frame(width: 110)
+                }
+                LabeledContent("Daily token ceiling") {
+                    TextField("Tokens", value: $budgets.dailyTokenLimit, format: .number)
+                        .multilineTextAlignment(.trailing).frame(width: 110)
+                }
+                LabeledContent("Provider deadline") {
+                    TextField("Seconds", value: $budgets.processDeadlineSeconds, format: .number)
+                        .multilineTextAlignment(.trailing).frame(width: 92)
+                    Text("seconds").foregroundStyle(.secondary)
+                }
                 Button("Save budgets") { Task { await model.saveGenerationBudgets(budgets) } }
                 Text(
-                    "Token limits include a conservative allowance for the provider CLI's own system context; Usage replaces estimates with emitted values after each run."
+                    "These are emergency burst safeguards. The weekly percentage and credit budget are the primary controls."
                 )
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -1418,6 +1426,39 @@ struct SettingsView: View {
 
     private var usageView: some View {
         Form {
+            SwiftUI.Section("Weekly budget") {
+                if let allowance = model.generationBudgetStatus.allowance {
+                    LabeledContent("Codex allowance", value: "\(allowance.remainingPercent)% left")
+                    if let reset = allowance.resetsAt {
+                        LabeledContent(
+                            "Resets",
+                            value: reset.formatted(date: .abbreviated, time: .shortened))
+                    }
+                }
+                LabeledContent(
+                    "Trackify-attributed allowance",
+                    value:
+                        "\(model.generationBudgetStatus.allowanceAttributedPercent)% / \(model.generationBudgetStatus.allowancePercentLimit ?? 0)%"
+                )
+                LabeledContent(
+                    "Estimated credits",
+                    value:
+                        "\(model.generationBudgetStatus.estimatedCreditsUsed.formatted()) / \((model.generationBudgetStatus.weeklyCreditLimit ?? 0).formatted())"
+                )
+                LabeledContent(
+                    "Calls today",
+                    value: "\(model.generationBudgetStatus.callsToday) / \(model.generationBudgetStatus.callsPerDayLimit)")
+                if model.generationBudgetStatus.isPaused {
+                    Label(
+                        "Automatic generation paused: \(model.generationBudgetStatus.pauseReason ?? "budget")",
+                        systemImage: "pause.circle.fill"
+                    )
+                    .foregroundStyle(.orange)
+                } else {
+                    Label("Automatic generation available", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                }
+            }
             SwiftUI.Section("Trackify-initiated model usage") {
                 UsageRow(title: "Today", usage: model.usageToday)
                 UsageRow(title: "This month", usage: model.usageMonth)
@@ -1447,42 +1488,18 @@ struct SettingsView: View {
         }.formStyle(.grouped)
     }
 
-    private var recipesView: some View {
-        Form {
-            SwiftUI.Section("Versioned recipes") {
-                ForEach(model.recipes) { recipe in
-                    HStack {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(recipe.name)
-                            Text(recipe.currentVersionID.rawValue)
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        if recipe.isBuiltIn { Text("Built-in").font(.caption).foregroundStyle(.secondary) }
-                    }
-                }
-                Text(
-                    "Custom focus can change audience and wording, but cannot weaken evidence, redaction, tools, schema, or provenance rules."
-                )
-                .font(.caption).foregroundStyle(.secondary)
-            }
-            SwiftUI.Section("Recent artifacts") {
-                if model.artifacts.isEmpty { Text("No artifacts yet.").foregroundStyle(.secondary) }
-                ForEach(model.artifacts.prefix(10)) { artifact in
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack {
-                            Text(artifact.recipeID.rawValue.replacingOccurrences(of: "-", with: " ").capitalized)
-                            Spacer()
-                            Text(artifact.privacyProfile.rawValue.capitalized)
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        Text(artifact.content).font(.caption).lineLimit(2).textSelection(.enabled)
-                        Text("Revision \(artifact.revision) · \(artifact.evidenceIDs.count) evidence links")
-                            .font(.caption2).foregroundStyle(.secondary)
-                    }.padding(.vertical, 2)
-                }
-            }
-        }.formStyle(.grouped)
+    private var weeklyAllowanceBinding: Binding<Int> {
+        Binding(
+            get: { budgets.weeklyAllowancePercentLimit ?? 3 },
+            set: { budgets.weeklyAllowancePercentLimit = min(max($0, 1), 20) })
+    }
+
+    private var weeklyCreditsBinding: Binding<Int> {
+        Binding(
+            get: {
+                NSDecimalNumber(decimal: budgets.weeklyCreditLimit ?? 500).intValue
+            },
+            set: { budgets.weeklyCreditLimit = Decimal(min(max($0, 50), 10_000)) })
     }
 
     private var generalView: some View {

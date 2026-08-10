@@ -112,6 +112,7 @@ public struct ActivityQueries: Sendable {
         store: LedgerStore,
         range: DateInterval,
         cutoff: Date,
+        repositoryIDs: Set<RepositoryID>? = nil,
         calendar: Calendar = .current
     ) throws -> ActivitySnapshot {
         let effectiveCutoff = max(range.start, min(cutoff, range.end))
@@ -121,7 +122,11 @@ public struct ActivityQueries: Sendable {
                 from: range.start,
                 through: effectiveCutoff,
                 kinds: CoreEvidence.kinds
-            ))
+            ).filter { event in
+                repositoryIDs.map { ids in
+                    event.repositoryID.map(ids.contains) == true
+                } ?? true
+            })
         let reachableCommitKeys = try store.reachableCommitKeys(from: range.start, through: effectiveCutoff)
         return snapshot(
             sourceEvents: sourceEvents,
@@ -148,6 +153,17 @@ public struct ActivityQueries: Sendable {
                 kinds: CoreEvidence.kinds
             ))
         let reachableCommitKeys = try store.reachableCommitKeys(from: firstStart, through: effectiveEnd)
+        if let partitioned = partition(sourceEvents, among: ranges, cutoff: cutoff) {
+            return zip(ranges, partitioned).map { range, events in
+                snapshot(
+                    selectedEvents: events,
+                    reachableCommitKeys: reachableCommitKeys,
+                    range: range,
+                    cutoff: min(cutoff, range.end),
+                    calendar: calendar
+                )
+            }
+        }
         return ranges.map {
             snapshot(
                 sourceEvents: sourceEvents,
@@ -170,7 +186,26 @@ public struct ActivityQueries: Sendable {
         let events = sourceEvents.filter {
             $0.occurredAt >= range.start
                 && $0.occurredAt < effectiveCutoff
-                && CoreEvidence.includes($0)
+        }
+        return snapshot(
+            selectedEvents: events,
+            reachableCommitKeys: reachableCommitKeys,
+            range: range,
+            cutoff: effectiveCutoff,
+            calendar: calendar
+        )
+    }
+
+    private func snapshot(
+        selectedEvents: [LedgerEvent],
+        reachableCommitKeys: Set<String>,
+        range: DateInterval,
+        cutoff: Date,
+        calendar: Calendar
+    ) -> ActivitySnapshot {
+        let effectiveCutoff = max(range.start, min(cutoff, range.end))
+        let events = selectedEvents.filter {
+            CoreEvidence.includes($0)
                 && CoreEvidence.isReachable($0, commitKeys: reachableCommitKeys)
         }
         let commitEvents = events.filter { $0.kind == .gitCommitObserved }
@@ -185,7 +220,7 @@ public struct ActivityQueries: Sendable {
             rangeStart: range.start,
             rangeEnd: effectiveCutoff,
             activeHours: activeHours,
-            llmTurns: messages.count { $0.payload["role"] == MessageRole.user.rawValue },
+            llmTurns: CanonicalWorkEvidenceService().logicalTurnCount(in: messages),
             conversationMessages: messages.count,
             commits: commitEvents.count,
             additions: additions,
@@ -198,26 +233,39 @@ public struct ActivityQueries: Sendable {
         )
     }
 
+    /// Dense chart queries can contain hundreds of adjacent hourly ranges.
+    /// Partitioning the fetched evidence once avoids rescanning the same event
+    /// set for every bar. Overlapping or unordered ranges retain the general
+    /// implementation above.
+    private func partition(
+        _ events: [LedgerEvent],
+        among ranges: [DateInterval],
+        cutoff: Date
+    ) -> [[LedgerEvent]]? {
+        guard !ranges.isEmpty else { return [] }
+        for index in ranges.indices.dropFirst() {
+            guard ranges[index - 1].start <= ranges[index].start,
+                ranges[index - 1].end <= ranges[index].start
+            else { return nil }
+        }
+
+        var buckets = Array(repeating: [LedgerEvent](), count: ranges.count)
+        var rangeIndex = 0
+        for event in events.sorted(by: { $0.occurredAt < $1.occurredAt }) {
+            while rangeIndex < ranges.count && event.occurredAt >= ranges[rangeIndex].end {
+                rangeIndex += 1
+            }
+            guard rangeIndex < ranges.count else { break }
+            let range = ranges[rangeIndex]
+            if event.occurredAt >= range.start && event.occurredAt < min(cutoff, range.end) {
+                buckets[rangeIndex].append(event)
+            }
+        }
+        return buckets
+    }
+
     private func canonicalEvents(store: LedgerStore, events: [LedgerEvent]) throws -> [LedgerEvent] {
-        let messageIDs: [MessageID] = events.compactMap { event -> MessageID? in
-            guard event.kind == .agentMessageObserved, let value = event.payload["messageID"] else { return nil }
-            return MessageID(value)
-        }
-        let uniqueIDs = Array(Set(messageIDs))
-        var mappings: [MessageID: MessageID] = [:]
-        for offset in stride(from: 0, to: uniqueIDs.count, by: 500) {
-            let end = min(offset + 500, uniqueIDs.count)
-            mappings.merge(try store.canonicalMessageIDs(Array(uniqueIDs[offset..<end]))) { _, latest in latest }
-        }
-        var seenMessages: Set<MessageID> = []
-        return events.filter { event in
-            guard event.kind == .agentMessageObserved,
-                let value = event.payload["messageID"]
-            else { return true }
-            let id = MessageID(value)
-            let canonical = mappings[id] ?? id
-            return seenMessages.insert(canonical).inserted
-        }
+        try CanonicalWorkEvidenceService().events(store: store, events: events)
     }
 
     public func dashboard(

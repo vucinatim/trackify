@@ -26,7 +26,15 @@ public struct ReportEventDigest: Encodable, Equatable, Sendable {
     public let repositoryName: String?
     public let sessionID: SessionID?
     public let messageRole: MessageRole?
+    public let logicalTurnID: LogicalTurnID?
+    public let messageOrigin: ConversationOrigin?
+    public let messageSemanticKind: ConversationSemanticKind?
     public let messageExcerpt: String?
+    public let originalCharacterCount: Int?
+    public let includedCharacterCount: Int?
+    public let wasTruncated: Bool
+    public let fragmentIndex: Int?
+    public let fragmentCount: Int?
     public let payload: [String: String]
     public let selectionReasons: [EvidenceSelectionReason]
 
@@ -41,7 +49,15 @@ public struct ReportEventDigest: Encodable, Equatable, Sendable {
         repositoryName: String? = nil,
         sessionID: SessionID? = nil,
         messageRole: MessageRole? = nil,
+        logicalTurnID: LogicalTurnID? = nil,
+        messageOrigin: ConversationOrigin? = nil,
+        messageSemanticKind: ConversationSemanticKind? = nil,
         messageExcerpt: String? = nil,
+        originalCharacterCount: Int? = nil,
+        includedCharacterCount: Int? = nil,
+        wasTruncated: Bool = false,
+        fragmentIndex: Int? = nil,
+        fragmentCount: Int? = nil,
         payload: [String: String],
         selectionReasons: [EvidenceSelectionReason] = [.representative]
     ) {
@@ -55,7 +71,15 @@ public struct ReportEventDigest: Encodable, Equatable, Sendable {
         self.repositoryName = repositoryName
         self.sessionID = sessionID
         self.messageRole = messageRole
+        self.logicalTurnID = logicalTurnID
+        self.messageOrigin = messageOrigin
+        self.messageSemanticKind = messageSemanticKind
         self.messageExcerpt = messageExcerpt
+        self.originalCharacterCount = originalCharacterCount
+        self.includedCharacterCount = includedCharacterCount
+        self.wasTruncated = wasTruncated
+        self.fragmentIndex = fragmentIndex
+        self.fragmentCount = fragmentCount
         self.payload = payload
         self.selectionReasons = selectionReasons
     }
@@ -70,7 +94,15 @@ public struct ReportEventDigest: Encodable, Equatable, Sendable {
         case repositoryName
         case sessionID
         case messageRole
+        case logicalTurnID
+        case messageOrigin
+        case messageSemanticKind
         case messageExcerpt
+        case originalCharacterCount
+        case includedCharacterCount
+        case wasTruncated
+        case fragmentIndex
+        case fragmentCount
         case payload
         case selectionReasons
     }
@@ -86,7 +118,15 @@ public struct ReportEventDigest: Encodable, Equatable, Sendable {
         try container.encodeIfPresent(repositoryName, forKey: .repositoryName)
         try container.encodeIfPresent(sessionID, forKey: .sessionID)
         try container.encodeIfPresent(messageRole, forKey: .messageRole)
+        try container.encodeIfPresent(logicalTurnID, forKey: .logicalTurnID)
+        try container.encodeIfPresent(messageOrigin, forKey: .messageOrigin)
+        try container.encodeIfPresent(messageSemanticKind, forKey: .messageSemanticKind)
         try container.encodeIfPresent(messageExcerpt, forKey: .messageExcerpt)
+        try container.encodeIfPresent(originalCharacterCount, forKey: .originalCharacterCount)
+        try container.encodeIfPresent(includedCharacterCount, forKey: .includedCharacterCount)
+        if wasTruncated { try container.encode(true, forKey: .wasTruncated) }
+        try container.encodeIfPresent(fragmentIndex, forKey: .fragmentIndex)
+        try container.encodeIfPresent(fragmentCount, forKey: .fragmentCount)
         try container.encode(payload, forKey: .payload)
         try container.encode(selectionReasons, forKey: .selectionReasons)
     }
@@ -94,29 +134,52 @@ public struct ReportEventDigest: Encodable, Equatable, Sendable {
 
 public struct ReportPeriodDigest: Encodable, Equatable, Sendable {
     public let alias: String
+    /// Kept locally for immutable report-run provenance; never encoded into a
+    /// provider packet because stable ledger identifiers are not model input.
+    public let summaryID: SummaryID?
     public let periodStart: Date
     public let periodEnd: Date
     public let state: ReportPeriodState
     public let summary: String
     public let provider: String?
     public let evidenceIDs: [EvidenceID]
+    public let projects: [String]
+    public let projectSections: [SummaryProjectSection]
+    public let intents: [String]
+    public let outcomes: [String]
+    public let openWork: [String]
+    public let blockers: [String]
 
     public init(
         alias: String,
+        summaryID: SummaryID? = nil,
         periodStart: Date,
         periodEnd: Date,
         state: ReportPeriodState,
         summary: String,
         provider: String?,
-        evidenceIDs: [EvidenceID]
+        evidenceIDs: [EvidenceID],
+        projects: [String] = [],
+        projectSections: [SummaryProjectSection] = [],
+        intents: [String] = [],
+        outcomes: [String] = [],
+        openWork: [String] = [],
+        blockers: [String] = []
     ) {
         self.alias = alias
+        self.summaryID = summaryID
         self.periodStart = periodStart
         self.periodEnd = periodEnd
         self.state = state
         self.summary = summary
         self.provider = provider
         self.evidenceIDs = evidenceIDs
+        self.projects = projects
+        self.projectSections = projectSections
+        self.intents = intents
+        self.outcomes = outcomes
+        self.openWork = openWork
+        self.blockers = blockers
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -127,6 +190,12 @@ public struct ReportPeriodDigest: Encodable, Equatable, Sendable {
         case summary
         case provider
         case evidenceCount
+        case projects
+        case projectSections
+        case intents
+        case outcomes
+        case openWork
+        case blockers
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -138,6 +207,14 @@ public struct ReportPeriodDigest: Encodable, Equatable, Sendable {
         try container.encode(summary, forKey: .summary)
         try container.encodeIfPresent(provider, forKey: .provider)
         try container.encode(evidenceIDs.count, forKey: .evidenceCount)
+        if !projects.isEmpty { try container.encode(projects, forKey: .projects) }
+        if !projectSections.isEmpty {
+            try container.encode(projectSections, forKey: .projectSections)
+        }
+        if !intents.isEmpty { try container.encode(intents, forKey: .intents) }
+        if !outcomes.isEmpty { try container.encode(outcomes, forKey: .outcomes) }
+        if !openWork.isEmpty { try container.encode(openWork, forKey: .openWork) }
+        if !blockers.isEmpty { try container.encode(blockers, forKey: .blockers) }
     }
 }
 
@@ -150,9 +227,9 @@ public struct ReportPacketSelection: Codable, Equatable, Sendable {
     public let activeContextCount: Int
     public let representedContextCount: Int
     public let omittedContextCount: Int
-    public let totalPriorReportCount: Int
-    public let selectedPriorReportCount: Int
-    public let omittedQuietReportCount: Int
+    public let totalPriorSummaryCount: Int
+    public let selectedPriorSummaryCount: Int
+    public let omittedQuietSummaryCount: Int
     public let serializedByteLimit: Int
 
     public init(
@@ -164,9 +241,9 @@ public struct ReportPacketSelection: Codable, Equatable, Sendable {
         activeContextCount: Int,
         representedContextCount: Int,
         omittedContextCount: Int,
-        totalPriorReportCount: Int = 0,
-        selectedPriorReportCount: Int = 0,
-        omittedQuietReportCount: Int = 0,
+        totalPriorSummaryCount: Int = 0,
+        selectedPriorSummaryCount: Int = 0,
+        omittedQuietSummaryCount: Int = 0,
         serializedByteLimit: Int
     ) {
         self.compilerVersion = compilerVersion
@@ -177,9 +254,9 @@ public struct ReportPacketSelection: Codable, Equatable, Sendable {
         self.activeContextCount = activeContextCount
         self.representedContextCount = representedContextCount
         self.omittedContextCount = omittedContextCount
-        self.totalPriorReportCount = totalPriorReportCount
-        self.selectedPriorReportCount = selectedPriorReportCount
-        self.omittedQuietReportCount = omittedQuietReportCount
+        self.totalPriorSummaryCount = totalPriorSummaryCount
+        self.selectedPriorSummaryCount = selectedPriorSummaryCount
+        self.omittedQuietSummaryCount = omittedQuietSummaryCount
         self.serializedByteLimit = serializedByteLimit
     }
 
@@ -192,9 +269,9 @@ public struct ReportPacketSelection: Codable, Equatable, Sendable {
         activeContextCount: 0,
         representedContextCount: 0,
         omittedContextCount: 0,
-        totalPriorReportCount: 0,
-        selectedPriorReportCount: 0,
-        omittedQuietReportCount: 0,
+        totalPriorSummaryCount: 0,
+        selectedPriorSummaryCount: 0,
+        omittedQuietSummaryCount: 0,
         serializedByteLimit: 256 * 1_024
     )
 }
@@ -268,7 +345,7 @@ public struct ReportEvidencePacket: Encodable, Equatable, Sendable {
     public let state: ReportPeriodState
     public let activity: ReportActivitySnapshot
     public let events: [ReportEventDigest]
-    public let priorReports: [ReportPeriodDigest]
+    public let priorSummaries: [ReportPeriodDigest]
     public let selection: ReportPacketSelection
 
     public init(
@@ -278,7 +355,7 @@ public struct ReportEvidencePacket: Encodable, Equatable, Sendable {
         state: ReportPeriodState,
         activity: ActivitySnapshot,
         events: [ReportEventDigest],
-        priorReports: [ReportPeriodDigest] = [],
+        priorSummaries: [ReportPeriodDigest] = [],
         selection: ReportPacketSelection = .legacy
     ) {
         self.schemaVersion = schemaVersion
@@ -287,7 +364,7 @@ public struct ReportEvidencePacket: Encodable, Equatable, Sendable {
         self.state = state
         self.activity = ReportActivitySnapshot(activity)
         self.events = events
-        self.priorReports = priorReports
+        self.priorSummaries = priorSummaries
         self.selection = selection
     }
 
@@ -298,7 +375,7 @@ public struct ReportEvidencePacket: Encodable, Equatable, Sendable {
         state: ReportPeriodState,
         activity: ReportActivitySnapshot,
         events: [ReportEventDigest],
-        priorReports: [ReportPeriodDigest],
+        priorSummaries: [ReportPeriodDigest],
         selection: ReportPacketSelection
     ) {
         self.schemaVersion = schemaVersion
@@ -307,24 +384,24 @@ public struct ReportEvidencePacket: Encodable, Equatable, Sendable {
         self.state = state
         self.activity = activity
         self.events = events
-        self.priorReports = priorReports
+        self.priorSummaries = priorSummaries
         self.selection = selection
     }
 
     public var evidenceAliases: Set<String> {
-        Set(events.map(\.eventID.rawValue)).union(priorReports.map(\.alias))
+        Set(events.map(\.eventID.rawValue)).union(priorSummaries.map(\.alias))
     }
 
     public func evidenceIDs(for aliases: [String]) -> [EvidenceID] {
         let eventEvidence = Dictionary(uniqueKeysWithValues: events.map { ($0.eventID.rawValue, [$0.evidenceID]) })
-        let reportEvidence = Dictionary(uniqueKeysWithValues: priorReports.map { ($0.alias, $0.evidenceIDs) })
+        let summaryEvidence = Dictionary(uniqueKeysWithValues: priorSummaries.map { ($0.alias, $0.evidenceIDs) })
         var seen = Set<EvidenceID>()
-        return aliases.flatMap { eventEvidence[$0] ?? reportEvidence[$0] ?? [] }
+        return aliases.flatMap { eventEvidence[$0] ?? summaryEvidence[$0] ?? [] }
             .filter { seen.insert($0).inserted }
     }
 
     public var allEvidenceIDs: [EvidenceID] {
-        evidenceIDs(for: events.map(\.eventID.rawValue) + priorReports.map(\.alias))
+        evidenceIDs(for: events.map(\.eventID.rawValue) + priorSummaries.map(\.alias))
     }
 
     public var serializedByteCount: Int {
@@ -341,13 +418,38 @@ public struct ReportEvidencePacket: Encodable, Equatable, Sendable {
 
 public struct ProviderSummary: Codable, Equatable, Sendable {
     public let summary: String
+    public let compactSummary: String
     public let topics: [String]
     public let evidenceAliases: [String]
+    public let projects: [String]
+    public let projectSummaries: [SummaryProjectSection]
+    public let intents: [String]
+    public let outcomes: [String]
+    public let openWork: [String]
+    public let blockers: [String]
 
-    public init(summary: String, topics: [String], evidenceAliases: [String]) {
+    public init(
+        summary: String,
+        compactSummary: String? = nil,
+        topics: [String],
+        evidenceAliases: [String],
+        projects: [String] = [],
+        projectSummaries: [SummaryProjectSection] = [],
+        intents: [String] = [],
+        outcomes: [String] = [],
+        openWork: [String] = [],
+        blockers: [String] = []
+    ) {
         self.summary = summary
+        self.compactSummary = compactSummary ?? summary
         self.topics = topics
         self.evidenceAliases = evidenceAliases
+        self.projects = projects
+        self.projectSummaries = projectSummaries
+        self.intents = intents
+        self.outcomes = outcomes
+        self.openWork = openWork
+        self.blockers = blockers
     }
 }
 
@@ -370,6 +472,42 @@ public struct ProviderGenerationResult: Codable, Equatable, Sendable {
     }
 }
 
+public struct ProviderInvocationContext: Equatable, Sendable {
+    public let operationID: String
+    public let purpose: String
+    public let workingDirectory: URL
+
+    public init(operationID: String, purpose: String, workingDirectory: URL) {
+        self.operationID = operationID
+        self.purpose = purpose
+        self.workingDirectory = workingDirectory.standardizedFileURL
+    }
+
+    public static func create(purpose: String) throws -> Self {
+        let operationID = UUID().uuidString.lowercased()
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "trackify-internal-\(operationID)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: false,
+            attributes: [.posixPermissions: 0o700])
+        try Data("\(operationID)\n\(purpose)\n".utf8).write(
+            to: directory.appending(path: ".trackify-internal-operation"), options: .atomic)
+        return Self(operationID: operationID, purpose: purpose, workingDirectory: directory)
+    }
+
+    public var environment: [String: String] {
+        [
+            "TRACKIFY_INTERNAL_OPERATION": "1",
+            "TRACKIFY_INTERNAL_OPERATION_ID": operationID,
+            "TRACKIFY_INTERNAL_OPERATION_PURPOSE": purpose,
+        ]
+    }
+
+    public func cleanup() {
+        try? FileManager.default.removeItem(at: workingDirectory)
+    }
+}
+
 public protocol SummaryProvider: Sendable {
     var id: String { get }
     var model: String { get }
@@ -377,6 +515,11 @@ public protocol SummaryProvider: Sendable {
     func generate(
         _ packet: ReportEvidencePacket,
         recipe: ReportRecipeVersion?
+    ) async throws -> ProviderGenerationResult
+    func generate(
+        _ packet: ReportEvidencePacket,
+        recipe: ReportRecipeVersion?,
+        context: ProviderInvocationContext
     ) async throws -> ProviderGenerationResult
 }
 
@@ -389,6 +532,15 @@ extension SummaryProvider {
             summary: try await summarize(packet),
             effectiveModel: model,
             invocationVersion: "summary-provider-v1")
+    }
+
+    func generate(
+        _ packet: ReportEvidencePacket,
+        recipe: ReportRecipeVersion?,
+        context: ProviderInvocationContext
+    ) async throws -> ProviderGenerationResult {
+        _ = context
+        return try await generate(packet, recipe: recipe)
     }
 }
 
@@ -409,20 +561,26 @@ public struct ReportGenerator: Sendable {
     public func evidencePacket(
         store: LedgerStore,
         range: DateInterval,
-        cutoff: Date
+        cutoff: Date,
+        repositoryIDs: Set<RepositoryID>? = nil
     ) throws -> ReportEvidencePacket {
         let effectiveCutoff = min(cutoff, range.end)
         let reachableCommitKeys = try store.reachableCommitKeys(from: range.start, through: effectiveCutoff)
-        let events = try store.events(
-            from: range.start,
-            through: effectiveCutoff,
-            kinds: CoreEvidence.kinds
-        ).filter {
-            $0.occurredAt < range.end
-                && CoreEvidence.includes($0)
-                && CoreEvidence.isReachable($0, commitKeys: reachableCommitKeys)
-        }
-        let activity = try queries.snapshot(store: store, range: range, cutoff: effectiveCutoff)
+        let sourceEvents = try store.events(
+            from: range.start, through: effectiveCutoff, kinds: CoreEvidence.kinds)
+        let events = try CanonicalWorkEvidenceService().events(
+            store: store,
+            events: sourceEvents.filter { event in
+                event.occurredAt < range.end
+                    && CoreEvidence.includes(event)
+                    && CoreEvidence.isReachable(event, commitKeys: reachableCommitKeys)
+                    && (repositoryIDs.map { ids in
+                        event.repositoryID.map(ids.contains) == true
+                    } ?? true)
+            })
+        let activity = try queries.snapshot(
+            store: store, range: range, cutoff: effectiveCutoff,
+            repositoryIDs: repositoryIDs)
         let state =
             activity.evidenceCount == 0
             ? ReportPeriodState.noActivity
@@ -433,7 +591,8 @@ public struct ReportGenerator: Sendable {
             cutoff: effectiveCutoff,
             state: state,
             activity: activity,
-            events: events
+            events: events,
+            repositoryIDs: repositoryIDs
         )
     }
 
@@ -454,7 +613,22 @@ public struct ReportGenerator: Sendable {
             providerID = nil
             model = nil
         } else if let provider {
-            let result = try await provider.summarize(packet)
+            let providerKind: SummaryProviderID? =
+                switch provider.id {
+                case "codex-cli": .codex
+                case "claude-cli": .claude
+                default: nil
+                }
+            let result: ProviderSummary
+            if let providerKind {
+                result = try await RegisteredProviderInvocation.generate(
+                    provider: provider, providerID: providerKind,
+                    packet: packet, recipe: nil, purpose: "legacy-report",
+                    store: store
+                ).summary
+            } else {
+                result = try await provider.summarize(packet)
+            }
             summary = SecretRedactor.redact(result.summary)
             evidenceIDs = packet.evidenceIDs(for: result.evidenceAliases)
             providerID = provider.id
@@ -544,7 +718,10 @@ public struct ReportGenerator: Sendable {
     private func concreteSummary(_ packet: ReportEvidencePacket) -> String? {
         let userRequests = packet.events.filter {
             $0.kind == .agentMessageObserved
-                && $0.messageRole == .user
+                && ($0.selectionReasons.contains(.userIntent)
+                    || ($0.messageOrigin == nil
+                        && $0.messageSemanticKind == nil
+                        && $0.messageRole == .user))
                 && $0.messageExcerpt?.isEmpty == false
         }
         let assistantUpdates = packet.events.filter {

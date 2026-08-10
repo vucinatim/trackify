@@ -10,7 +10,7 @@ public struct TrackifySettings: Codable, Equatable, Sendable {
     public var summaryProvider: SummaryProviderID?
     public var providerSelection: ProviderSelectionMode
     public var generationBudgets: GenerationBudgets
-    public var scheduledModelReportsEnabled: Bool
+    public var automaticSummariesUseLLM: Bool
     public var movingAverageActiveDays: Int
     public var automaticUpdateChecks: Bool
     public var collectionPaused: Bool
@@ -20,7 +20,7 @@ public struct TrackifySettings: Codable, Equatable, Sendable {
         summaryProvider: SummaryProviderID? = nil,
         providerSelection: ProviderSelectionMode? = nil,
         generationBudgets: GenerationBudgets = GenerationBudgets(),
-        scheduledModelReportsEnabled: Bool = false,
+        automaticSummariesUseLLM: Bool = false,
         movingAverageActiveDays: Int = 14,
         automaticUpdateChecks: Bool = true,
         collectionPaused: Bool = false,
@@ -32,7 +32,7 @@ public struct TrackifySettings: Codable, Equatable, Sendable {
                 $0 == .codex ? .codex : .claude
             } ?? .automatic
         self.generationBudgets = generationBudgets
-        self.scheduledModelReportsEnabled = scheduledModelReportsEnabled
+        self.automaticSummariesUseLLM = automaticSummariesUseLLM
         self.movingAverageActiveDays = movingAverageActiveDays
         self.automaticUpdateChecks = automaticUpdateChecks
         self.collectionPaused = collectionPaused
@@ -43,6 +43,8 @@ public struct TrackifySettings: Codable, Equatable, Sendable {
         case summaryProvider
         case providerSelection
         case generationBudgets
+        case automaticSummariesUseLLM
+        /// Decode-only compatibility with builds before canonical summaries.
         case scheduledModelReportsEnabled
         case movingAverageActiveDays
         case automaticUpdateChecks
@@ -60,12 +62,24 @@ public struct TrackifySettings: Codable, Equatable, Sendable {
         generationBudgets =
             try values.decodeIfPresent(GenerationBudgets.self, forKey: .generationBudgets)
             ?? GenerationBudgets()
-        scheduledModelReportsEnabled =
-            try values.decodeIfPresent(
-                Bool.self, forKey: .scheduledModelReportsEnabled) ?? (summaryProvider != nil)
+        automaticSummariesUseLLM =
+            try values.decodeIfPresent(Bool.self, forKey: .automaticSummariesUseLLM)
+            ?? values.decodeIfPresent(Bool.self, forKey: .scheduledModelReportsEnabled)
+            ?? (summaryProvider != nil)
         movingAverageActiveDays = try values.decodeIfPresent(Int.self, forKey: .movingAverageActiveDays) ?? 14
         automaticUpdateChecks = try values.decodeIfPresent(Bool.self, forKey: .automaticUpdateChecks) ?? true
         collectionPaused = try values.decodeIfPresent(Bool.self, forKey: .collectionPaused) ?? false
         launchAtLoginEnabled = try values.decodeIfPresent(Bool.self, forKey: .launchAtLoginEnabled)
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(providerSelection, forKey: .providerSelection)
+        try values.encode(generationBudgets, forKey: .generationBudgets)
+        try values.encode(automaticSummariesUseLLM, forKey: .automaticSummariesUseLLM)
+        try values.encode(movingAverageActiveDays, forKey: .movingAverageActiveDays)
+        try values.encode(automaticUpdateChecks, forKey: .automaticUpdateChecks)
+        try values.encode(collectionPaused, forKey: .collectionPaused)
+        try values.encodeIfPresent(launchAtLoginEnabled, forKey: .launchAtLoginEnabled)
     }
 }

@@ -679,7 +679,7 @@ For a locally built bundle, `scripts/install-local.sh <Trackify.app> [--launch]`
 4. The default installation path requires no administrator privileges.
 5. App and CLI versions match.
 6. Codex authentication is detected through its non-interactive status command; Claude Code versions without such a command remain explicitly `authentication_unknown` until the first enabled report invocation, without reading credentials.
-7. A single ready provider is selected automatically.
+7. A single ready provider is selected automatically; when readiness is unknown, the first enabled generation verifies it without a separate setup step.
 8. Both-provider and no-provider states produce clear bounded setup actions.
 9. The app opens before bounded backfill finishes; temporary collection pause prevents a duplicate app import while bootstrap owns the first pass.
 10. Protected folder access uses standard macOS approval.

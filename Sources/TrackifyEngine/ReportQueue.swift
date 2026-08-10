@@ -28,23 +28,50 @@ public struct ModelBackfillPlan: Codable, Equatable, Sendable {
     }
 }
 
+public struct ReportGenerationPreview: Codable, Equatable, Sendable {
+    public let state: ReportPeriodState
+    public let evidenceCount: Int
+    public let serializedBytes: Int
+    public let estimatedInputTokens: Int
+    public let providerMode: ProviderSelectionMode
+
+    public init(
+        state: ReportPeriodState, evidenceCount: Int, serializedBytes: Int,
+        estimatedInputTokens: Int, providerMode: ProviderSelectionMode
+    ) {
+        self.state = state
+        self.evidenceCount = evidenceCount
+        self.serializedBytes = serializedBytes
+        self.estimatedInputTokens = estimatedInputTokens
+        self.providerMode = providerMode
+    }
+}
+
 public struct ReportQueue: Sendable {
     public typealias ProviderFactory = @Sendable (SummaryProviderID, TimeInterval) -> any SummaryProvider
 
     private let providerFactory: ProviderFactory
     private let generator: ReportGenerator
     private let recipePolicy: ReportRecipePolicy
+    private let budgetController: GenerationBudgetController
+    private let allowanceReader: any ProviderAllowanceReading
 
     public init(
         providerFactory: @escaping ProviderFactory = { id, deadline in
             SummaryProviderFactory.make(id, timeout: deadline)
         },
         generator: ReportGenerator = ReportGenerator(),
-        recipePolicy: ReportRecipePolicy = ReportRecipePolicy()
+        recipePolicy: ReportRecipePolicy = ReportRecipePolicy(),
+        allowanceReader: any ProviderAllowanceReading = AutomaticProviderAllowanceReader(),
+        budgetController: GenerationBudgetController? = nil
     ) {
         self.providerFactory = providerFactory
         self.generator = generator
         self.recipePolicy = recipePolicy
+        self.allowanceReader = allowanceReader
+        self.budgetController =
+            budgetController
+            ?? GenerationBudgetController(allowanceReader: allowanceReader)
     }
 
     /// Enqueues only the most recent closed hour and day. This deliberately
@@ -60,33 +87,45 @@ public struct ReportQueue: Sendable {
             let day = calendar.dateInterval(of: .day, for: now),
             let dayStart = calendar.date(byAdding: .day, value: -1, to: day.start)
         else { return ReportQueueResult(issues: ["Could not calculate closed report periods."]) }
-        let candidates: [(DateInterval, RecipeID)] = [
-            (DateInterval(start: hourStart, end: hour.start), RecipeID("hourly-work-note")),
-            (DateInterval(start: dayStart, end: day.start), RecipeID("daily-work-summary")),
-        ]
+        let candidates: [(DateInterval, ReportSchedule)] = try store.reportSchedules(enabledOnly: true).map {
+            schedule in
+            switch schedule.cadence {
+            case .hourly: return (DateInterval(start: hourStart, end: hour.start), schedule)
+            case .daily: return (DateInterval(start: dayStart, end: day.start), schedule)
+            }
+        }
         var enqueued: [ReportRunID] = []
         var issues: [String] = []
-        for (period, recipeID) in candidates {
+        for (period, schedule) in candidates {
             do {
-                guard let (_, recipe) = try store.recipe(id: recipeID) else { continue }
-                guard
-                    try !store.hasArtifact(
-                        period: period, recipeVersionID: recipe.id, intent: .scheduled)
+                guard let (template, storedRecipe) = try store.recipe(id: schedule.recipeID),
+                    template.isEnabled
                 else { continue }
-                let packet = try recipePolicy.apply(
-                    generator.evidencePacket(store: store, range: period, cutoff: period.end),
-                    recipe: recipe)
+                guard try !store.hasReportRun(period: period, scheduleID: schedule.id) else { continue }
+                let configuration = ReportRunConfiguration(
+                    purpose: storedRecipe.purpose, audience: storedRecipe.audience,
+                    repositoryIDs: schedule.repositoryIDs, groupNames: schedule.groupNames,
+                    customFocus: storedRecipe.customFocus, tone: storedRecipe.tone,
+                    outputFormat: storedRecipe.outputFormat,
+                    maximumCharacters: storedRecipe.maximumCharacters,
+                    privacyProfile: storedRecipe.privacyProfile,
+                    providerModeOverride: schedule.providerModeOverride
+                        ?? storedRecipe.providerModeOverride)
+                let recipe = configuration.recipeVersion(basedOn: storedRecipe)
+                let packet = try evidencePacket(
+                    store: store, range: period, cutoff: period.end, recipe: recipe)
                 let run = makePendingRun(
                     recipe: recipe, period: period, intent: .scheduled,
-                    mode: settings.scheduledModelReportsEnabled
-                        ? (recipe.providerModeOverride ?? settings.providerSelection)
-                        : .localOnly,
-                    packet: packet, now: now)
+                    mode: recipe.providerModeOverride ?? settings.providerSelection,
+                    packet: packet, now: now, configuration: configuration,
+                    scheduleID: schedule.id)
                 let persisted = try store.enqueue(
-                    EnqueueReportRun(run: run, evidence: provenance(packet)))
+                    EnqueueReportRun(
+                        run: run, evidence: provenance(packet),
+                        summaries: summaryProvenance(packet)))
                 if persisted.state == .pending { enqueued.append(persisted.id) }
             } catch {
-                issues.append("Could not enqueue \(recipeID.rawValue): \(error.localizedDescription)")
+                issues.append("Could not enqueue \(schedule.id.rawValue): \(error.localizedDescription)")
             }
         }
         return ReportQueueResult(enqueued: enqueued, issues: issues)
@@ -98,19 +137,47 @@ public struct ReportQueue: Sendable {
         recipeID: RecipeID,
         period: DateInterval,
         now: Date,
-        intent: ReportRunIntent = .onDemand
+        intent: ReportRunIntent = .onDemand,
+        configuration: ReportRunConfiguration? = nil
     ) throws -> ReportRun {
-        guard let (_, recipe) = try store.recipe(id: recipeID) else {
+        guard let (_, storedRecipe) = try store.recipe(id: recipeID) else {
             throw LedgerStoreError.unsupportedValue(type: "ReportRecipe", value: recipeID.rawValue)
         }
-        let packet = try recipePolicy.apply(
-            generator.evidencePacket(store: store, range: period, cutoff: min(now, period.end)),
-            recipe: recipe)
+        let runConfiguration = try validated(configuration ?? ReportRunConfiguration(recipe: storedRecipe))
+        let recipe = runConfiguration.recipeVersion(basedOn: storedRecipe)
+        let packet = try evidencePacket(
+            store: store, range: period, cutoff: min(now, period.end), recipe: recipe)
         let run = makePendingRun(
             recipe: recipe, period: period, intent: intent,
             mode: recipe.providerModeOverride ?? settings.providerSelection,
-            packet: packet, now: now)
-        return try store.enqueue(EnqueueReportRun(run: run, evidence: provenance(packet)))
+            packet: packet, now: now, configuration: runConfiguration)
+        return try store.enqueue(
+            EnqueueReportRun(
+                run: run, evidence: provenance(packet),
+                summaries: summaryProvenance(packet)))
+    }
+
+    public func preview(
+        store: LedgerStore,
+        settings: TrackifySettings,
+        recipeID: RecipeID,
+        period: DateInterval,
+        cutoff: Date,
+        configuration: ReportRunConfiguration? = nil
+    ) throws -> ReportGenerationPreview {
+        guard let (_, storedRecipe) = try store.recipe(id: recipeID) else {
+            throw LedgerStoreError.unsupportedValue(type: "ReportRecipe", value: recipeID.rawValue)
+        }
+        let runConfiguration = try validated(configuration ?? ReportRunConfiguration(recipe: storedRecipe))
+        let recipe = runConfiguration.recipeVersion(basedOn: storedRecipe)
+        let packet = try evidencePacket(
+            store: store, range: period, cutoff: min(cutoff, period.end), recipe: recipe)
+        let mode = recipe.providerModeOverride ?? settings.providerSelection
+        return ReportGenerationPreview(
+            state: packet.state, evidenceCount: packet.selection.selectedEventCount,
+            serializedBytes: packet.serializedByteCount,
+            estimatedInputTokens: estimatedInputTokens(packet: packet, mode: mode),
+            providerMode: mode)
     }
 
     public func backfillPlan(
@@ -126,9 +193,8 @@ public struct ReportQueue: Sendable {
         var active = 0
         var tokens = 0
         for period in periods {
-            let packet = try recipePolicy.apply(
-                generator.evidencePacket(store: store, range: period, cutoff: min(cutoff, period.end)),
-                recipe: recipe)
+            let packet = try evidencePacket(
+                store: store, range: period, cutoff: min(cutoff, period.end), recipe: recipe)
             guard packet.state != .noActivity else { continue }
             active += 1
             tokens += estimatedInputTokens(packet: packet, mode: providerMode)
@@ -166,22 +232,26 @@ public struct ReportQueue: Sendable {
         precondition((1...20).contains(maximumRuns))
         let ownerID = "reports:\(ProcessInfo.processInfo.processIdentifier):\(UUID().uuidString)"
         do {
-            guard try store.acquireLease(name: "report-generation", ownerID: ownerID, now: now(), duration: 240)
+            guard
+                try store.acquireLease(
+                    name: ProviderGenerationLease.name, ownerID: ownerID,
+                    now: now(), duration: 240)
             else { return ReportQueueResult() }
         } catch {
             return ReportQueueResult(issues: ["Could not acquire report queue: \(error.localizedDescription)"])
         }
-        defer { try? store.releaseLease(name: "report-generation", ownerID: ownerID) }
+        defer { try? store.releaseLease(name: ProviderGenerationLease.name, ownerID: ownerID) }
 
         var completed: [ArtifactID] = []
         var issues: [String] = []
         do {
             for run in try store.recoverInterruptedReportRuns(at: now()) where run.intent != .providerTest {
-                guard let recipe = try store.recipeVersion(id: run.recipeVersionID) else { continue }
-                let raw = try generator.evidencePacket(
-                    store: store, range: DateInterval(start: run.periodStart, end: run.periodEnd),
-                    cutoff: run.periodEnd)
-                let packet = recipePolicy.apply(raw, recipe: recipe)
+                guard let storedRecipe = try store.recipeVersion(id: run.recipeVersionID) else { continue }
+                let recipe = run.configuration?.recipeVersion(basedOn: storedRecipe) ?? storedRecipe
+                let packet = try evidencePacket(
+                    store: store,
+                    range: DateInterval(start: run.periodStart, end: run.periodEnd),
+                    cutoff: run.periodEnd, recipe: recipe)
                 let artifact = try deterministicArtifact(
                     run: run, recipe: recipe, packet: packet,
                     summary: generator.deterministicSummary(packet), failureClass: .cancelled,
@@ -215,12 +285,12 @@ public struct ReportQueue: Sendable {
         let ownerID = "provider-test:\(ProcessInfo.processInfo.processIdentifier):\(UUID().uuidString)"
         guard
             try store.acquireLease(
-                name: "report-generation", ownerID: ownerID, now: now, duration: 60)
+                name: ProviderGenerationLease.name, ownerID: ownerID, now: now, duration: 60)
         else {
             throw LedgerStoreError.unsupportedValue(
                 type: "ProviderTest", value: "another report run is active")
         }
-        defer { try? store.releaseLease(name: "report-generation", ownerID: ownerID) }
+        defer { try? store.releaseLease(name: ProviderGenerationLease.name, ownerID: ownerID) }
         let recipe = try syntheticTestRecipe(store: store)
         let interval = DateInterval(start: now, duration: 1)
         let activity = ActivitySnapshot(
@@ -259,7 +329,10 @@ public struct ReportQueue: Sendable {
             failureClass: nil, failureDetail: nil, artifactID: nil)
         try store.updateReportRun(running)
         do {
-            let result = try await provider.generate(packet, recipe: recipe)
+            let result = try await RegisteredProviderInvocation.generate(
+                provider: provider, providerID: providerID,
+                packet: packet, recipe: recipe, purpose: "provider-test",
+                store: store, allowanceReader: allowanceReader, now: Date.init)
             let content = SecretRedactor.redact(result.summary.summary)
             _ = try saveArtifact(
                 run: replacing(
@@ -285,22 +358,22 @@ public struct ReportQueue: Sendable {
         settings: TrackifySettings,
         now: @escaping @Sendable () -> Date
     ) async throws -> Artifact? {
-        guard let recipe = try store.recipeVersion(id: run.recipeVersionID) else {
+        guard let storedRecipe = try store.recipeVersion(id: run.recipeVersionID) else {
             return try finishFailure(
                 run, class: .unknown, detail: "Recipe version no longer exists", store: store, now: now())
         }
-        let rawPacket: ReportEvidencePacket
+        let recipe = run.configuration?.recipeVersion(basedOn: storedRecipe) ?? storedRecipe
+        let packet: ReportEvidencePacket
         if run.intent == .providerTest {
             return try finishFailure(
                 run, class: .cancelled, detail: "Interrupted provider test was not replayed",
                 store: store, now: now())
         } else {
-            rawPacket = try generator.evidencePacket(
+            packet = try evidencePacket(
                 store: store,
                 range: DateInterval(start: run.periodStart, end: run.periodEnd),
-                cutoff: run.periodEnd)
+                cutoff: run.periodEnd, recipe: recipe)
         }
-        let packet = recipePolicy.apply(rawPacket, recipe: recipe)
         if packet.state == .noActivity {
             return try deterministicArtifact(
                 run: run, recipe: recipe, packet: packet,
@@ -312,17 +385,24 @@ public struct ReportQueue: Sendable {
                 run: run, recipe: recipe, packet: packet,
                 summary: generator.deterministicSummary(packet), store: store, now: now())
         }
-        if let reason = try budgetPauseReason(
-            run: run, packet: packet, budgets: settings.generationBudgets,
-            store: store, now: now())
-        {
+        let provider = providerFactory(
+            selectedProviderID,
+            TimeInterval(settings.generationBudgets.processDeadlineSeconds))
+        let budget = try budgetController.decision(
+            request: GenerationBudgetRequest(
+                provider: selectedProviderID, model: provider.model, calls: 1,
+                maximumInputBytes: packet.serializedByteCount,
+                maximumEstimatedInputTokens: runningEstimate(run, packet: packet),
+                totalEstimatedInputTokens: runningEstimate(run, packet: packet)),
+            budgets: settings.generationBudgets, store: store, now: now())
+        if !budget.allowed {
             return try deterministicArtifact(
                 run: run, recipe: recipe, packet: packet,
                 summary: generator.deterministicSummary(packet), failureClass: .budget,
-                failureDetail: "LLM budget paused: \(reason)", store: store, now: now())
+                failureDetail: "LLM budget paused: \(budget.reason ?? "budget unavailable")",
+                store: store, now: now())
         }
 
-        let provider = providerFactory(selectedProviderID, TimeInterval(settings.generationBudgets.processDeadlineSeconds))
         let startedAt = now()
         let running = replacing(
             run, requestedProvider: selectedProviderID, requestedModel: provider.model,
@@ -333,7 +413,11 @@ public struct ReportQueue: Sendable {
             failureClass: nil, failureDetail: nil, artifactID: nil)
         try store.updateReportRun(running)
         do {
-            let result = try await provider.generate(packet, recipe: recipe)
+            let result = try await RegisteredProviderInvocation.generate(
+                provider: provider, providerID: selectedProviderID,
+                packet: packet, recipe: recipe,
+                purpose: "report:\(run.id.rawValue)", store: store,
+                allowanceReader: allowanceReader, now: now)
             if try store.reportRun(id: run.id)?.state == .cancelled { return nil }
             let content = SecretRedactor.redact(result.summary.summary)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -378,54 +462,10 @@ public struct ReportQueue: Sendable {
     private func providerSelection(for run: ReportRun, store: LedgerStore) -> SummaryProviderID? {
         guard run.selectionMode != .localOnly else { return nil }
         if let explicit = run.selectionMode.explicitProvider { return explicit }
-        let capabilities = CapabilityDiscovery().generators(store: store)
-        guard
-            let id = CapabilityDiscovery().effectiveProvider(
-                mode: run.selectionMode, capabilities: capabilities),
-            let capability = capabilities.first(where: { $0.id == id })
-        else { return nil }
-        guard capability.authentication == .ready else { return nil }
-        return id
-    }
-
-    private func budgetPauseReason(
-        run: ReportRun,
-        packet: ReportEvidencePacket,
-        budgets: GenerationBudgets,
-        store: LedgerStore,
-        now: Date,
-        calendar: Calendar = .current
-    ) throws -> String? {
-        if packet.serializedByteCount > budgets.maximumInputBytesPerCall { return "per-call byte limit" }
-        let projectedTokens = runningEstimate(run, packet: packet)
-        if projectedTokens > budgets.maximumEstimatedInputTokensPerCall {
-            return "per-call token limit"
-        }
-        guard let day = calendar.dateInterval(of: .day, for: now),
-            let month = calendar.dateInterval(of: .month, for: now)
-        else { return "calendar budget unavailable" }
-        if try store.providerInvocationCount(from: day.start, through: day.end) >= budgets.maximumCallsPerDay {
-            return "daily call limit"
-        }
-        let daily = try store.usage(from: day.start, through: day.end)
-        let dailyTokens = try store.generationTokenCommitment(from: day.start, through: day.end)
-        if dailyTokens + projectedTokens > budgets.dailyTokenLimit { return "daily token limit" }
-        if let limit = budgets.monthlyTokenLimit {
-            let tokens = try store.generationTokenCommitment(from: month.start, through: month.end)
-            if tokens + projectedTokens > limit { return "monthly token limit" }
-        }
-        if let limit = budgets.dailyMonetaryLimit,
-            !daily.hasUnknownCost,
-            daily.knownCost >= limit
-        {
-            return "daily monetary limit"
-        }
-        if let limit = budgets.monthlyMonetaryLimit {
-            let monthly = try store.usage(from: month.start, through: month.end)
-            if !monthly.hasUnknownCost, monthly.knownCost >= limit { return "monthly monetary limit" }
-        }
-        _ = run
-        return nil
+        let discovery = CapabilityDiscovery()
+        let capabilities = discovery.generators(store: store)
+        return discovery.automaticInvocationProvider(
+            mode: run.selectionMode, capabilities: capabilities)
     }
 
     private func deterministicArtifact(
@@ -483,16 +523,6 @@ public struct ReportQueue: Sendable {
             startedAt: run.startedAt, finishedAt: run.finishedAt ?? now, state: run.state,
             failureClass: run.failureClass, failureDetail: run.failureDetail, artifactID: artifact.id)
         try store.updateReportRun(finished)
-        if run.intent != .providerTest {
-            let report = WorkReport(
-                id: ReportID(StableHash.sha256("report:\(artifact.id.rawValue)")),
-                periodStart: artifact.periodStart, periodEnd: artifact.periodEnd,
-                state: artifact.state, summary: artifact.content, evidenceIDs: artifact.evidenceIDs,
-                provider: run.effectiveProvider.map { "\($0.rawValue)-cli" },
-                model: run.effectiveModel, generatorVersion: ReportGenerator.version,
-                revision: artifact.revision)
-            try store.save(report: report)
-        }
         return artifact
     }
 
@@ -526,11 +556,14 @@ public struct ReportQueue: Sendable {
         intent: ReportRunIntent,
         mode: ProviderSelectionMode,
         packet: ReportEvidencePacket,
-        now: Date
+        now: Date,
+        configuration: ReportRunConfiguration? = nil,
+        scheduleID: ReportScheduleID? = nil
     ) -> ReportRun {
+        let uniquePart = scheduleID?.rawValue ?? (intent == .scheduled ? "scheduled" : UUID().uuidString)
         let identity = [
             recipe.id.rawValue, String(period.start.timeIntervalSince1970),
-            String(period.end.timeIntervalSince1970), intent.rawValue,
+            String(period.end.timeIntervalSince1970), intent.rawValue, uniquePart,
         ].joined(separator: ":")
         return ReportRun(
             id: ReportRunID(StableHash.sha256("report-run:\(identity)")),
@@ -542,7 +575,23 @@ public struct ReportQueue: Sendable {
             outputSchemaVersion: ReportRecipePolicy.outputSchemaVersion,
             inputBytes: packet.serializedByteCount,
             estimatedInputTokens: estimatedInputTokens(packet: packet, mode: mode),
-            queuedAt: now, state: .pending)
+            queuedAt: now, state: .pending,
+            configuration: configuration ?? ReportRunConfiguration(recipe: recipe),
+            scheduleID: scheduleID)
+    }
+
+    private func validated(_ configuration: ReportRunConfiguration) throws -> ReportRunConfiguration {
+        guard (100...2_000).contains(configuration.maximumCharacters) else {
+            throw RecipeValidationError.invalidMaximumCharacters
+        }
+        return ReportRunConfiguration(
+            purpose: configuration.purpose, audience: configuration.audience,
+            repositoryIDs: configuration.repositoryIDs, groupNames: configuration.groupNames,
+            customFocus: try configuration.customFocus.map(ReportRecipeValidator.customFocus),
+            tone: configuration.tone, outputFormat: configuration.outputFormat,
+            maximumCharacters: configuration.maximumCharacters,
+            privacyProfile: configuration.privacyProfile,
+            providerModeOverride: configuration.providerModeOverride)
     }
 
     private func estimatedInputTokens(
@@ -551,6 +600,20 @@ public struct ReportQueue: Sendable {
     ) -> Int {
         guard mode != .localOnly else { return packet.estimatedInputTokens }
         return packet.estimatedInputTokens + GenerationBudgets.conservativeProviderOverheadTokens
+    }
+
+    private func evidencePacket(
+        store: LedgerStore,
+        range: DateInterval,
+        cutoff: Date,
+        recipe: ReportRecipeVersion
+    ) throws -> ReportEvidencePacket {
+        let repositoryIDs = try ReportScopeResolver().repositoryIDs(store: store, recipe: recipe)
+        let raw = try generator.evidencePacket(
+            store: store, range: range, cutoff: cutoff,
+            repositoryIDs: repositoryIDs)
+        return recipePolicy.apply(
+            raw, recipe: recipe, scopedRepositoryIDs: repositoryIDs)
     }
 
     private func runningEstimate(_ run: ReportRun, packet: ReportEvidencePacket) -> Int {
@@ -562,10 +625,18 @@ public struct ReportQueue: Sendable {
         var values = packet.events.map {
             ($0.eventID.rawValue, $0.evidenceID, $0.selectionReasons.map(\.rawValue).joined(separator: ","))
         }
-        for report in packet.priorReports {
-            values.append(contentsOf: report.evidenceIDs.map { (report.alias, $0, "prior_report") })
+        for summary in packet.priorSummaries {
+            values.append(contentsOf: summary.evidenceIDs.map { (summary.alias, $0, "prior_summary") })
         }
         return values
+    }
+
+    private func summaryProvenance(
+        _ packet: ReportEvidencePacket
+    ) -> [(alias: String, summaryID: SummaryID)] {
+        packet.priorSummaries.compactMap { summary in
+            summary.summaryID.map { (summary.alias, $0) }
+        }
     }
 
     private func classify(_ error: Error) -> (GenerationFailureClass, String) {
@@ -612,6 +683,7 @@ public struct ReportQueue: Sendable {
             outputSchemaVersion: run.outputSchemaVersion, inputBytes: inputBytes,
             estimatedInputTokens: estimatedInputTokens, usage: usage, queuedAt: run.queuedAt,
             startedAt: startedAt, finishedAt: finishedAt, state: state,
-            failureClass: failureClass, failureDetail: failureDetail, artifactID: artifactID)
+            failureClass: failureClass, failureDetail: failureDetail, artifactID: artifactID,
+            configuration: run.configuration, scheduleID: run.scheduleID)
     }
 }

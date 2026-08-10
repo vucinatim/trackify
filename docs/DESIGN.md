@@ -915,3 +915,40 @@ These should be resolved with prototypes or real captured data rather than specu
 - The fixture scenario file format and whether it should be public API in the first release.
 
 None of these open decisions require changing the central architecture: a shared application layer over a local evidence ledger with replaceable collectors and summarizers.
+
+## 19. Goal 3 canonical summary architecture
+
+Goal 3 supersedes the earlier use of `WorkReport` as both an automatic
+interpretation and a user-facing output. The current one-way dependency is:
+
+```text
+canonical evidence -> WorkSummary -> ReportArtifact -> destination
+```
+
+`SummaryCoverageCompiler` is the only leaf-summary input compiler. It resolves
+message aliases, filters unreachable commits and internal control envelopes,
+redacts secrets, preserves full user and commit text across ordered fragments,
+bounds assistant text with explicit metadata, and fails closed unless every
+eligible evidence identity is covered. It groups active evidence into stable
+closed half-hour slots; quiet slots do not trigger per-slot queries or model
+calls.
+
+`SummaryCoordinator` creates immutable segment revisions and composes complete
+segment children into current and day parents. Identity is a source
+fingerprint, not wall-clock refresh frequency. Refreshing twice inside one
+half-hour boundary is idempotent; late evidence creates a new leaf revision and
+therefore new parents. Provider failure and budget exhaustion produce the same
+structured local content without blocking collection.
+
+`WorkSummary` stores a full narrative, a separately authored compact narrative,
+project names, project sections, intent, outcomes, open work, blockers, topics,
+statistics, coverage, child links, evidence links, and provider provenance.
+Model output is repaired with deterministic project sections if a provider
+omits an evidenced project. Normal queries and search expose the newest exact-
+period revision while stable IDs keep earlier revisions auditable.
+
+Configurable reports compile complete day or segment summaries before selecting
+direct evidence anchors. They cannot feed back into summaries. The legacy
+`reports` table remains read-only compatibility data through one rollback
+window; runtime Overview, menu, Activity, search, and summary CLI surfaces use
+`work_summaries`.

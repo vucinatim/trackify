@@ -327,7 +327,10 @@ struct LedgerStoreTests {
                     == [
                         "0001_initial", "0002_collector_diagnostics", "0003_message_aliases",
                         "0004_near_duplicate_messages", "0005_message_privacy",
-                        "0006_work_intelligence",
+                        "0006_work_intelligence", "0007_configurable_reports",
+                        "0008_report_schedules", "0009_canonical_summaries",
+                        "0010_canonical_evidence", "0011_canonical_evidence_lookups",
+                        "0012_evidence_coverage", "0013_provider_allowance_attribution",
                     ])
             #expect(try store.counts() == LedgerCounts(repositories: 0, commits: 0, sessions: 0, messages: 0, events: 0, observations: 0))
             #expect(try store.health().integrity == "ok")
@@ -358,7 +361,16 @@ struct LedgerStoreTests {
         var settings = try store.load()
         #expect(settings.launchAtLoginEnabled == nil)
         #expect(settings.providerSelection == .automatic)
-        #expect(settings.scheduledModelReportsEnabled == false)
+        #expect(settings.automaticSummariesUseLLM == false)
+        #expect(settings.generationBudgets.weeklyAllowancePercentLimit == 3)
+        #expect(settings.generationBudgets.dailyTokenLimit == 1_000_000)
+
+        let legacy =
+            #"{"generationBudgets":{"maximumInputBytesPerCall":20480,"maximumEstimatedInputTokensPerCall":24000,"maximumCallsPerDay":8,"dailyTokenLimit":50000,"monthlyTokenLimit":1000000,"processDeadlineSeconds":180}}"#
+        try Data(legacy.utf8).write(to: url, options: .atomic)
+        settings = try store.load()
+        #expect(settings.generationBudgets.maximumCallsPerDay == 30)
+        #expect(settings.generationBudgets.weeklyCreditLimit == 500)
         settings.launchAtLoginEnabled = false
         try store.save(settings)
         #expect(try store.load().launchAtLoginEnabled == false)

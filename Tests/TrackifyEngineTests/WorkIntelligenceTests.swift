@@ -7,13 +7,48 @@ import TrackifyStore
 
 @Suite("Goal 2 work intelligence")
 struct WorkIntelligenceTests {
+    @Test("Manual regeneration preserves each run and its exact one-off instructions")
+    func manualRegenerationHistory() async throws {
+        try await withSimulation { store, start, end in
+            let queue = ReportQueue()
+            let settings = TrackifySettings(providerSelection: .localOnly)
+            let period = DateInterval(start: start, duration: 86_400)
+            let (_, version) = try #require(try store.recipe(id: RecipeID("daily-work-summary")))
+            func configuration(_ focus: String) -> ReportRunConfiguration {
+                ReportRunConfiguration(
+                    purpose: version.purpose, audience: version.audience,
+                    repositoryIDs: version.repositoryIDs, groupNames: version.groupNames,
+                    customFocus: focus, tone: version.tone, outputFormat: version.outputFormat,
+                    maximumCharacters: version.maximumCharacters,
+                    privacyProfile: version.privacyProfile, providerModeOverride: .localOnly)
+            }
+            let first = try queue.enqueueOnDemand(
+                store: store, settings: settings, recipeID: version.recipeID,
+                period: period, now: end, configuration: configuration("Write a stand-up update."))
+            let second = try queue.enqueueOnDemand(
+                store: store, settings: settings, recipeID: version.recipeID,
+                period: period, now: end, configuration: configuration("Write a timesheet description."))
+            #expect(first.id != second.id)
+            _ = await queue.drain(store: store, settings: settings, now: { end }, maximumRuns: 2)
+            let storedFirst = try #require(try store.reportRun(id: first.id))
+            let storedSecond = try #require(try store.reportRun(id: second.id))
+            #expect(storedFirst.configuration?.customFocus == "Write a stand-up update.")
+            #expect(storedSecond.configuration?.customFocus == "Write a timesheet description.")
+            #expect(storedFirst.artifactID != nil)
+            #expect(storedSecond.artifactID != nil)
+            #expect(try store.artifacts(limit: 20).filter { $0.reportRunID == first.id || $0.reportRunID == second.id }.count == 2)
+        }
+    }
+
     @Test("A provider run records measured usage and an immutable provenance-backed artifact")
     func measuredProviderRun() async throws {
         try await withSimulation { store, start, end in
             let counter = InvocationCounter()
-            let queue = ReportQueue(providerFactory: { _, _ in MeasuredProvider(counter: counter) })
+            let queue = ReportQueue(
+                providerFactory: { _, _ in MeasuredProvider(counter: counter) },
+                allowanceReader: NoProviderAllowanceReader())
             let settings = TrackifySettings(
-                providerSelection: .codex, scheduledModelReportsEnabled: true)
+                providerSelection: .codex, automaticSummariesUseLLM: true)
             let period = DateInterval(start: start, duration: 86_400)
             let pending = try queue.enqueueOnDemand(
                 store: store, settings: settings, recipeID: RecipeID("daily-work-summary"),
@@ -37,12 +72,15 @@ struct WorkIntelligenceTests {
             let artifactID = try #require(run.artifactID)
             let artifact = try #require(try store.artifact(id: artifactID))
             #expect(artifact.reportRunID == run.id)
-            #expect(artifact.recipeVersionID == RecipeVersionID("daily-work-summary:v1"))
+            #expect(artifact.recipeVersionID == RecipeVersionID("daily-work-summary:v2"))
             #expect(!artifact.evidenceIDs.isEmpty)
             #expect(artifact.content == "Measured evidence summary")
             let usage = try store.usage(from: start, through: end.addingTimeInterval(1))
             #expect(usage.runs == 1)
             #expect(usage.knownCost == Decimal(string: "0.04"))
+            #expect(
+                try store.generationTokenCommitment(
+                    from: start, through: end.addingTimeInterval(1)) == 138)
         }
     }
 
@@ -50,11 +88,13 @@ struct WorkIntelligenceTests {
     func budgetAndQuietFallback() async throws {
         try await withSimulation { store, start, end in
             let counter = InvocationCounter()
-            let queue = ReportQueue(providerFactory: { _, _ in MeasuredProvider(counter: counter) })
+            let queue = ReportQueue(
+                providerFactory: { _, _ in MeasuredProvider(counter: counter) },
+                allowanceReader: NoProviderAllowanceReader())
             let budgets = GenerationBudgets(dailyTokenLimit: 1_000)
             let settings = TrackifySettings(
                 providerSelection: .codex, generationBudgets: budgets,
-                scheduledModelReportsEnabled: true)
+                automaticSummariesUseLLM: true)
             let active = try queue.enqueueOnDemand(
                 store: store, settings: settings, recipeID: RecipeID("daily-work-summary"),
                 period: DateInterval(start: start, duration: 86_400), now: end)
@@ -149,6 +189,85 @@ struct WorkIntelligenceTests {
         }
     }
 
+    @Test("Named report groups resolve before bounded evidence selection")
+    func namedGroupScope() throws {
+        let directory = try temporaryDirectory("report-group")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let store = try LedgerStore(databaseURL: directory.appending(path: "ledger.sqlite"))
+        let start = Date(timeIntervalSince1970: 1_754_294_400)
+        let workRoot = DiscoveryRoot(
+            id: DiscoveryRootID("work-root"), canonicalPath: "/workspace/Work",
+            displayName: "Work", createdAt: start)
+        let personalRoot = DiscoveryRoot(
+            id: DiscoveryRootID("personal-root"), canonicalPath: "/workspace/Personal",
+            displayName: "Personal", createdAt: start)
+        try store.upsert(discoveryRoot: workRoot)
+        try store.upsert(discoveryRoot: personalRoot)
+
+        let workRepository = RepositoryID("work-repository")
+        let personalRepository = RepositoryID("personal-repository")
+        for (id, name, root) in [
+            (workRepository, "Work App", workRoot),
+            (personalRepository, "Personal App", personalRoot),
+        ] {
+            try store.upsert(
+                repository: Repository(
+                    id: id, displayName: name, firstObservedAt: start,
+                    lastObservedAt: start.addingTimeInterval(3_600)),
+                workingCopy: WorkingCopy(
+                    id: WorkingCopyID("\(id.rawValue)-copy"), repositoryID: id,
+                    canonicalPath: "\(root.canonicalPath)/\(id.rawValue)",
+                    firstObservedAt: start, lastObservedAt: start.addingTimeInterval(3_600)),
+                discoveryRootID: root.id, relativePath: id.rawValue)
+        }
+
+        for index in 0..<8 {
+            let repositoryID = index < 2 ? workRepository : personalRepository
+            let occurredAt = start.addingTimeInterval(TimeInterval(index * 60))
+            let evidenceID = EvidenceID("group-evidence-\(index)")
+            _ = try store.ingest(
+                evidence: SourceEvidence(
+                    id: evidenceID, source: .simulation, ingestionPath: .fixture,
+                    sourceRecordID: "group-\(index)", fingerprint: "group-\(index)",
+                    occurredAt: occurredAt, observedAt: occurredAt, adapterVersion: 1),
+                event: LedgerEvent(
+                    id: EventID("group-event-\(index)"), evidenceID: evidenceID,
+                    occurredAt: occurredAt, observedAt: occurredAt, source: .simulation,
+                    kind: .testFinished, repositoryID: repositoryID,
+                    payload: ["suite": "group-\(index)", "result": "passed"]))
+        }
+
+        let recipe = try store.createRecipeVersion(
+            recipeID: RecipeID("work-note"), name: "Work note", purpose: "Work summary",
+            audience: "team", cadence: .onDemand, groupNames: ["work"],
+            tone: "plain", outputFormat: .plainText, maximumCharacters: 500,
+            privacyProfile: .team, now: start)
+        let scope = try ReportScopeResolver().repositoryIDs(store: store, recipe: recipe)
+        let resolved = try #require(scope)
+        #expect(resolved == [workRepository])
+        #expect(recipe.groupNames == ["work"])
+        #expect(
+            try store.events(
+                from: start, through: start.addingTimeInterval(3_600),
+                kinds: CoreEvidence.kinds
+            ).count == 8)
+        let raw = try ReportGenerator().evidencePacket(
+            store: store, range: DateInterval(start: start, duration: 3_600),
+            cutoff: start.addingTimeInterval(3_600), repositoryIDs: resolved)
+        #expect(raw.activity.evidenceCount == 2)
+        #expect(raw.events.count == 2)
+        let filtered = ReportRecipePolicy().apply(
+            raw, recipe: recipe, scopedRepositoryIDs: resolved)
+        #expect(filtered.events.count == 2)
+
+        let preview = try ReportQueue().preview(
+            store: store, settings: TrackifySettings(providerSelection: .localOnly),
+            recipeID: recipe.recipeID,
+            period: DateInterval(start: start, duration: 3_600),
+            cutoff: start.addingTimeInterval(3_600))
+        #expect(preview.evidenceCount == 2)
+    }
+
     @Test("Source and generation capabilities remain separate and automatic choice is deterministic")
     func capabilities() throws {
         let directory = try temporaryDirectory("capabilities")
@@ -173,6 +292,29 @@ struct WorkIntelligenceTests {
         #expect(discovery.effectiveProvider(mode: .automatic, capabilities: capabilities) == .codex)
         #expect(discovery.effectiveProvider(mode: .claude, capabilities: capabilities) == .claude)
         #expect(discovery.effectiveProvider(mode: .localOnly, capabilities: capabilities) == nil)
+
+        let unknown = [
+            capability(.claude, authentication: .unknown),
+            capability(.codex, authentication: .unknown),
+        ]
+        #expect(discovery.effectiveProvider(mode: .automatic, capabilities: unknown) == .codex)
+        #expect(
+            discovery.automaticInvocationProvider(mode: .automatic, capabilities: unknown)
+                == .codex)
+        #expect(
+            discovery.automaticInvocationProvider(mode: .codex, capabilities: unknown)
+                == .codex)
+
+        let fallbackToUnknown = [
+            capability(.codex, authentication: .unavailable),
+            capability(.claude, authentication: .unknown),
+        ]
+        #expect(
+            discovery.automaticInvocationProvider(
+                mode: .automatic, capabilities: fallbackToUnknown) == .claude)
+        #expect(
+            discovery.automaticInvocationProvider(
+                mode: .codex, capabilities: fallbackToUnknown) == nil)
     }
 
     @Test("Provider usage parsers preserve distinct token and cost categories")
@@ -198,7 +340,47 @@ struct WorkIntelligenceTests {
         #expect(codex.costKind == .unknown)
     }
 
-    @Test("Claude generation discovery prefers the newest Desktop Code CLI before terminal fallback")
+    @Test("Weekly allowance attribution pauses Trackify at its configured percentage")
+    func weeklyAllowanceBudget() async throws {
+        try await withSimulation { store, _, end in
+            let reset = end.addingTimeInterval(7 * 86_400)
+            let snapshot = ProviderAllowanceSnapshot(
+                provider: .codex, limitID: "codex", plan: "pro",
+                usedPercent: 27, windowDurationMinutes: 10_080,
+                resetsAt: reset, observedAt: end)
+            try store.saveProviderAllowanceAttribution(
+                operationID: "one", provider: .codex, purpose: "summary",
+                startedAt: end, finishedAt: end,
+                before: allowance(snapshot, used: 24),
+                after: allowance(snapshot, used: 26))
+            try store.saveProviderAllowanceAttribution(
+                operationID: "two", provider: .codex, purpose: "summary",
+                startedAt: end, finishedAt: end,
+                before: allowance(snapshot, used: 26),
+                after: allowance(snapshot, used: 27))
+            let controller = GenerationBudgetController(
+                allowanceReader: FixedAllowanceReader(value: snapshot))
+            let status = try controller.status(
+                store: store, budgets: GenerationBudgets(),
+                provider: .codex, now: end)
+            #expect(status.allowanceAttributedPercent == 3)
+            #expect(status.isPaused)
+            #expect(status.pauseReason == "weekly Trackify allowance target")
+        }
+    }
+
+    private func allowance(
+        _ snapshot: ProviderAllowanceSnapshot,
+        used: Int
+    ) -> ProviderAllowanceSnapshot {
+        ProviderAllowanceSnapshot(
+            provider: snapshot.provider, limitID: snapshot.limitID,
+            plan: snapshot.plan, usedPercent: used,
+            windowDurationMinutes: snapshot.windowDurationMinutes,
+            resetsAt: snapshot.resetsAt, observedAt: snapshot.observedAt)
+    }
+
+    @Test("Claude generation discovery prefers a user's standalone CLI before Desktop fallback")
     func claudeExecutableDiscovery() throws {
         let directory = try temporaryDirectory("claude-executables")
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -219,15 +401,17 @@ struct WorkIntelligenceTests {
             homeDirectory: directory, environment: ["PATH": ""])
         #expect(
             selected?.standardizedFileURL.resolvingSymlinksInPath()
-                == newest.standardizedFileURL.resolvingSymlinksInPath())
+                == terminal.standardizedFileURL.resolvingSymlinksInPath())
     }
 
     @Test("A slow provider never owns or delays the collection lease")
     func collectionDuringSlowProvider() async throws {
         try await withSimulation { store, start, end in
             let gate = ProviderGate()
-            let queue = ReportQueue(providerFactory: { _, _ in GatedProvider(gate: gate) })
-            let settings = TrackifySettings(providerSelection: .codex, scheduledModelReportsEnabled: true)
+            let queue = ReportQueue(
+                providerFactory: { _, _ in GatedProvider(gate: gate) },
+                allowanceReader: NoProviderAllowanceReader())
+            let settings = TrackifySettings(providerSelection: .codex, automaticSummariesUseLLM: true)
             _ = try queue.enqueueOnDemand(
                 store: store, settings: settings, recipeID: RecipeID("daily-work-summary"),
                 period: DateInterval(start: start, duration: 86_400), now: end)
@@ -249,6 +433,10 @@ struct WorkIntelligenceTests {
         try await withSimulation { store, _, end in
             let wake = end.addingTimeInterval(5 * 86_400)
             let settings = TrackifySettings(providerSelection: .localOnly)
+            try store.setReportScheduleEnabled(
+                true, id: ReportScheduleID("schedule:hourly-work-note"), now: wake)
+            try store.setReportScheduleEnabled(
+                true, id: ReportScheduleID("schedule:daily-work-summary"), now: wake)
             let result = try ReportQueue().enqueueDueReports(
                 store: store, settings: settings, now: wake,
                 calendar: Calendar(identifier: .gregorian))
@@ -260,11 +448,60 @@ struct WorkIntelligenceTests {
         }
     }
 
+    @Test("Parallel reporters sharing a template remain independently scoped and idempotent")
+    func parallelScheduledReporters() async throws {
+        try await withSimulation { store, _, end in
+            for existing in try store.reportSchedules() {
+                try store.deleteReportSchedule(id: existing.id)
+            }
+            let firstID = ReportScheduleID("backend-daily")
+            let secondID = ReportScheduleID("frontend-daily")
+            _ = try store.saveReportSchedule(
+                id: firstID,
+                draft: ReportScheduleDraft(
+                    name: "Backend daily", recipeID: RecipeID("daily-work-summary"),
+                    cadence: .daily, repositoryIDs: [RepositoryID("backend")]),
+                now: end)
+            _ = try store.saveReportSchedule(
+                id: secondID,
+                draft: ReportScheduleDraft(
+                    name: "Frontend daily", recipeID: RecipeID("daily-work-summary"),
+                    cadence: .daily, repositoryIDs: [RepositoryID("frontend")]),
+                now: end)
+
+            let wake = end.addingTimeInterval(86_400)
+            let settings = TrackifySettings(providerSelection: .localOnly)
+            let first = try ReportQueue().enqueueDueReports(
+                store: store, settings: settings, now: wake,
+                calendar: Calendar(identifier: .gregorian))
+            let repeated = try ReportQueue().enqueueDueReports(
+                store: store, settings: settings, now: wake,
+                calendar: Calendar(identifier: .gregorian))
+
+            #expect(first.enqueued.count == 2)
+            #expect(repeated.enqueued.isEmpty)
+            let runs = try store.reportRuns()
+            #expect(Set(runs.compactMap(\.scheduleID)) == Set([firstID, secondID]))
+            #expect(
+                Set(runs.compactMap { $0.configuration?.repositoryIDs.first }) == Set([RepositoryID("backend"), RepositoryID("frontend")]))
+
+            try store.setReportScheduleEnabled(false, id: secondID, now: wake)
+            let nextWake = wake.addingTimeInterval(86_400)
+            let next = try ReportQueue().enqueueDueReports(
+                store: store, settings: settings, now: nextWake,
+                calendar: Calendar(identifier: .gregorian))
+            #expect(next.enqueued.count == 1)
+            #expect(try store.reportRun(id: next.enqueued[0])?.scheduleID == firstID)
+        }
+    }
+
     @Test("An interrupted running job is recovered locally without replaying the provider")
     func interruptedRecovery() async throws {
         try await withSimulation { store, start, end in
             let counter = InvocationCounter()
-            let queue = ReportQueue(providerFactory: { _, _ in MeasuredProvider(counter: counter) })
+            let queue = ReportQueue(
+                providerFactory: { _, _ in MeasuredProvider(counter: counter) },
+                allowanceReader: NoProviderAllowanceReader())
             let settings = TrackifySettings(providerSelection: .codex)
             let pending = try queue.enqueueOnDemand(
                 store: store, settings: settings, recipeID: RecipeID("daily-work-summary"),
@@ -286,10 +523,11 @@ struct WorkIntelligenceTests {
     func explicitProviderNoFailover() async throws {
         try await withSimulation { store, start, end in
             let recorder = ProviderRecorder()
-            let queue = ReportQueue(providerFactory: { id, _ in
-                recorder.record(id)
-                return UnavailableProvider(id: id)
-            })
+            let queue = ReportQueue(
+                providerFactory: { id, _ in
+                    recorder.record(id)
+                    return UnavailableProvider(id: id)
+                }, allowanceReader: NoProviderAllowanceReader())
             let settings = TrackifySettings(providerSelection: .claude)
             let pending = try queue.enqueueOnDemand(
                 store: store, settings: settings, recipeID: RecipeID("daily-work-summary"),
@@ -368,6 +606,31 @@ struct WorkIntelligenceTests {
         #expect(elapsed < 5, "Bounded one-year UI queries took \(elapsed) seconds")
     }
 
+    @Test("Dense hourly snapshots preserve totals without rescanning each bucket")
+    func denseHourlySnapshots() async throws {
+        try await withSimulation { store, start, end in
+            var ranges: [DateInterval] = []
+            var cursor = start
+            while cursor < end {
+                let next = Calendar.current.date(byAdding: .hour, value: 1, to: cursor)!
+                ranges.append(DateInterval(start: cursor, end: min(next, end)))
+                cursor = next
+            }
+
+            let queries = ActivityQueries()
+            let hourly = try queries.snapshots(store: store, ranges: ranges, cutoff: end)
+            let complete = try queries.snapshot(
+                store: store, range: DateInterval(start: start, end: end), cutoff: end)
+
+            #expect(hourly.count == ranges.count)
+            #expect(hourly.reduce(0) { $0 + $1.activeHours } == complete.activeHours)
+            #expect(hourly.reduce(0) { $0 + $1.llmTurns } == complete.llmTurns)
+            #expect(hourly.reduce(0) { $0 + $1.commits } == complete.commits)
+            #expect(hourly.reduce(0) { $0 + $1.additions } == complete.additions)
+            #expect(hourly.reduce(0) { $0 + $1.deletions } == complete.deletions)
+        }
+    }
+
     private func withSimulation(
         _ body: (LedgerStore, Date, Date) async throws -> Void
     ) async throws {
@@ -432,6 +695,14 @@ private struct MeasuredProvider: SummaryProvider {
                 reasoningTokens: 7, cost: Decimal(string: "0.04"), currency: "USD",
                 costKind: .providerEstimate, billingContext: "fixture"),
             effectiveModel: "measured-model", invocationVersion: "fixture-v1")
+    }
+}
+
+private struct FixedAllowanceReader: ProviderAllowanceReading {
+    let value: ProviderAllowanceSnapshot
+
+    func snapshot(provider: SummaryProviderID, now: Date) -> ProviderAllowanceSnapshot? {
+        provider == value.provider ? value : nil
     }
 }
 

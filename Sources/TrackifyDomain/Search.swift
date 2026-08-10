@@ -5,6 +5,7 @@ public enum SearchDocumentKind: String, Codable, Sendable {
     case commit
     case message
     case report
+    case summary
 }
 
 public struct SearchResult: Codable, Equatable, Sendable {

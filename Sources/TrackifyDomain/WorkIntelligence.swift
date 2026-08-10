@@ -121,16 +121,33 @@ public struct GenerationBudgets: Codable, Equatable, Sendable {
     public var maximumCallsPerDay: Int
     public var dailyTokenLimit: Int
     public var monthlyTokenLimit: Int?
+    /// Trackify-owned weekly usage expressed using the provider's published
+    /// equivalent credit rate. This remains useful when the provider does not
+    /// expose a subscription allowance snapshot.
+    public var weeklyCreditLimit: Decimal?
+    /// Maximum percentage points of a provider's live weekly allowance that
+    /// Trackify may attribute to its own automatic invocations.
+    public var weeklyAllowancePercentLimit: Int?
+    /// Automatic generation stops before consuming the account's final
+    /// allowance. Manual provider use outside Trackify is never attributed to
+    /// this budget.
+    public var minimumProviderAllowanceRemainingPercent: Int
+    /// Conservative output reservation used for preflight credit estimates.
+    public var estimatedOutputTokensPerCall: Int
     public var dailyMonetaryLimit: Decimal?
     public var monthlyMonetaryLimit: Decimal?
     public var processDeadlineSeconds: Int
 
     public init(
-        maximumInputBytesPerCall: Int = 20 * 1_024,
-        maximumEstimatedInputTokensPerCall: Int = 24_000,
-        maximumCallsPerDay: Int = 8,
-        dailyTokenLimit: Int = 50_000,
-        monthlyTokenLimit: Int? = 1_000_000,
+        maximumInputBytesPerCall: Int = 256 * 1_024,
+        maximumEstimatedInputTokensPerCall: Int = 100_000,
+        maximumCallsPerDay: Int = 30,
+        dailyTokenLimit: Int = 1_000_000,
+        monthlyTokenLimit: Int? = 20_000_000,
+        weeklyCreditLimit: Decimal? = 500,
+        weeklyAllowancePercentLimit: Int? = 3,
+        minimumProviderAllowanceRemainingPercent: Int = 5,
+        estimatedOutputTokensPerCall: Int = 2_000,
         dailyMonetaryLimit: Decimal? = nil,
         monthlyMonetaryLimit: Decimal? = nil,
         processDeadlineSeconds: Int = 180
@@ -140,9 +157,122 @@ public struct GenerationBudgets: Codable, Equatable, Sendable {
         self.maximumCallsPerDay = maximumCallsPerDay
         self.dailyTokenLimit = dailyTokenLimit
         self.monthlyTokenLimit = monthlyTokenLimit
+        self.weeklyCreditLimit = weeklyCreditLimit
+        self.weeklyAllowancePercentLimit = weeklyAllowancePercentLimit
+        self.minimumProviderAllowanceRemainingPercent = minimumProviderAllowanceRemainingPercent
+        self.estimatedOutputTokensPerCall = estimatedOutputTokensPerCall
         self.dailyMonetaryLimit = dailyMonetaryLimit
         self.monthlyMonetaryLimit = monthlyMonetaryLimit
         self.processDeadlineSeconds = processDeadlineSeconds
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case version
+        case maximumInputBytesPerCall
+        case maximumEstimatedInputTokensPerCall
+        case maximumCallsPerDay
+        case dailyTokenLimit
+        case monthlyTokenLimit
+        case weeklyCreditLimit
+        case weeklyAllowancePercentLimit
+        case minimumProviderAllowanceRemainingPercent
+        case estimatedOutputTokensPerCall
+        case dailyMonetaryLimit
+        case monthlyMonetaryLimit
+        case processDeadlineSeconds
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let version = try values.decodeIfPresent(Int.self, forKey: .version) ?? 1
+        let modern = GenerationBudgets()
+        if version < 2 {
+            // V1's defaults were sized for synthetic provider tests and caused
+            // ordinary summaries to fall back after only a few calls. Migrate
+            // the entire policy once instead of carrying those accidental
+            // product limits forward indefinitely.
+            self = modern
+            return
+        }
+        maximumInputBytesPerCall =
+            try values.decodeIfPresent(
+                Int.self, forKey: .maximumInputBytesPerCall) ?? modern.maximumInputBytesPerCall
+        maximumEstimatedInputTokensPerCall =
+            try values.decodeIfPresent(
+                Int.self, forKey: .maximumEstimatedInputTokensPerCall)
+            ?? modern.maximumEstimatedInputTokensPerCall
+        maximumCallsPerDay =
+            try values.decodeIfPresent(
+                Int.self, forKey: .maximumCallsPerDay) ?? modern.maximumCallsPerDay
+        dailyTokenLimit =
+            try values.decodeIfPresent(
+                Int.self, forKey: .dailyTokenLimit) ?? modern.dailyTokenLimit
+        monthlyTokenLimit =
+            values.contains(.monthlyTokenLimit)
+            ? try values.decodeIfPresent(Int.self, forKey: .monthlyTokenLimit)
+            : modern.monthlyTokenLimit
+        weeklyCreditLimit =
+            values.contains(.weeklyCreditLimit)
+            ? try values.decodeIfPresent(Decimal.self, forKey: .weeklyCreditLimit)
+            : modern.weeklyCreditLimit
+        weeklyAllowancePercentLimit =
+            values.contains(.weeklyAllowancePercentLimit)
+            ? try values.decodeIfPresent(Int.self, forKey: .weeklyAllowancePercentLimit)
+            : modern.weeklyAllowancePercentLimit
+        minimumProviderAllowanceRemainingPercent =
+            try values.decodeIfPresent(
+                Int.self, forKey: .minimumProviderAllowanceRemainingPercent)
+            ?? modern.minimumProviderAllowanceRemainingPercent
+        estimatedOutputTokensPerCall =
+            try values.decodeIfPresent(
+                Int.self, forKey: .estimatedOutputTokensPerCall)
+            ?? modern.estimatedOutputTokensPerCall
+        dailyMonetaryLimit = try values.decodeIfPresent(
+            Decimal.self, forKey: .dailyMonetaryLimit)
+        monthlyMonetaryLimit = try values.decodeIfPresent(
+            Decimal.self, forKey: .monthlyMonetaryLimit)
+        processDeadlineSeconds =
+            try values.decodeIfPresent(
+                Int.self, forKey: .processDeadlineSeconds) ?? modern.processDeadlineSeconds
+        self = normalized()
+    }
+
+    public func encode(to encoder: any Encoder) throws {
+        var values = encoder.container(keyedBy: CodingKeys.self)
+        try values.encode(2, forKey: .version)
+        try values.encode(maximumInputBytesPerCall, forKey: .maximumInputBytesPerCall)
+        try values.encode(maximumEstimatedInputTokensPerCall, forKey: .maximumEstimatedInputTokensPerCall)
+        try values.encode(maximumCallsPerDay, forKey: .maximumCallsPerDay)
+        try values.encode(dailyTokenLimit, forKey: .dailyTokenLimit)
+        try values.encodeIfPresent(monthlyTokenLimit, forKey: .monthlyTokenLimit)
+        try values.encodeIfPresent(weeklyCreditLimit, forKey: .weeklyCreditLimit)
+        try values.encodeIfPresent(weeklyAllowancePercentLimit, forKey: .weeklyAllowancePercentLimit)
+        try values.encode(
+            minimumProviderAllowanceRemainingPercent,
+            forKey: .minimumProviderAllowanceRemainingPercent)
+        try values.encode(estimatedOutputTokensPerCall, forKey: .estimatedOutputTokensPerCall)
+        try values.encodeIfPresent(dailyMonetaryLimit, forKey: .dailyMonetaryLimit)
+        try values.encodeIfPresent(monthlyMonetaryLimit, forKey: .monthlyMonetaryLimit)
+        try values.encode(processDeadlineSeconds, forKey: .processDeadlineSeconds)
+    }
+
+    public func normalized() -> GenerationBudgets {
+        GenerationBudgets(
+            maximumInputBytesPerCall: min(max(maximumInputBytesPerCall, 4 * 1_024), 1_024 * 1_024),
+            maximumEstimatedInputTokensPerCall: min(
+                max(maximumEstimatedInputTokensPerCall, Self.conservativeProviderOverheadTokens),
+                500_000),
+            maximumCallsPerDay: min(max(maximumCallsPerDay, 1), 96),
+            dailyTokenLimit: min(max(dailyTokenLimit, 50_000), 20_000_000),
+            monthlyTokenLimit: monthlyTokenLimit.map { min(max($0, 1_000_000), 100_000_000) },
+            weeklyCreditLimit: weeklyCreditLimit.map { min(max($0, 10), 10_000) },
+            weeklyAllowancePercentLimit: weeklyAllowancePercentLimit.map { min(max($0, 1), 20) },
+            minimumProviderAllowanceRemainingPercent: min(
+                max(minimumProviderAllowanceRemainingPercent, 0), 25),
+            estimatedOutputTokensPerCall: min(max(estimatedOutputTokensPerCall, 100), 20_000),
+            dailyMonetaryLimit: dailyMonetaryLimit,
+            monthlyMonetaryLimit: monthlyMonetaryLimit,
+            processDeadlineSeconds: min(max(processDeadlineSeconds, 15), 600))
     }
 }
 
@@ -239,6 +369,192 @@ public struct ReportRecipeVersion: Codable, Equatable, Sendable, Identifiable {
     }
 }
 
+/// The complete, immutable configuration used for one generation. A run keeps
+/// this snapshot even when its template is edited later.
+public struct ReportRunConfiguration: Codable, Equatable, Sendable {
+    public let purpose: String
+    public let audience: String
+    public let repositoryIDs: [RepositoryID]
+    public let groupNames: [String]
+    public let customFocus: String?
+    public let tone: String
+    public let outputFormat: RecipeOutputFormat
+    public let maximumCharacters: Int
+    public let privacyProfile: PrivacyProfile
+    public let providerModeOverride: ProviderSelectionMode?
+
+    public init(
+        purpose: String,
+        audience: String,
+        repositoryIDs: [RepositoryID] = [],
+        groupNames: [String] = [],
+        customFocus: String? = nil,
+        tone: String,
+        outputFormat: RecipeOutputFormat,
+        maximumCharacters: Int,
+        privacyProfile: PrivacyProfile,
+        providerModeOverride: ProviderSelectionMode? = nil
+    ) {
+        self.purpose = purpose
+        self.audience = audience
+        self.repositoryIDs = repositoryIDs
+        self.groupNames = groupNames
+        self.customFocus = customFocus
+        self.tone = tone
+        self.outputFormat = outputFormat
+        self.maximumCharacters = maximumCharacters
+        self.privacyProfile = privacyProfile
+        self.providerModeOverride = providerModeOverride
+    }
+
+    public init(recipe: ReportRecipeVersion) {
+        self.init(
+            purpose: recipe.purpose, audience: recipe.audience,
+            repositoryIDs: recipe.repositoryIDs, groupNames: recipe.groupNames,
+            customFocus: recipe.customFocus, tone: recipe.tone,
+            outputFormat: recipe.outputFormat, maximumCharacters: recipe.maximumCharacters,
+            privacyProfile: recipe.privacyProfile,
+            providerModeOverride: recipe.providerModeOverride)
+    }
+
+    public func recipeVersion(basedOn recipe: ReportRecipeVersion) -> ReportRecipeVersion {
+        ReportRecipeVersion(
+            id: recipe.id, recipeID: recipe.recipeID, version: recipe.version,
+            purpose: purpose, audience: audience, cadence: recipe.cadence,
+            repositoryIDs: repositoryIDs, groupNames: groupNames,
+            customFocus: customFocus, tone: tone, outputFormat: outputFormat,
+            maximumCharacters: maximumCharacters, privacyProfile: privacyProfile,
+            providerModeOverride: providerModeOverride, createdAt: recipe.createdAt)
+    }
+}
+
+public struct ReportTemplate: Codable, Equatable, Sendable, Identifiable {
+    public let recipe: ReportRecipe
+    public let version: ReportRecipeVersion
+
+    public init(recipe: ReportRecipe, version: ReportRecipeVersion) {
+        self.recipe = recipe
+        self.version = version
+    }
+
+    public var id: RecipeID { recipe.id }
+}
+
+public struct ReportTemplateDraft: Codable, Equatable, Sendable {
+    public var name: String
+    public var purpose: String
+    public var audience: String
+    public var cadence: RecipeCadence
+    public var repositoryIDs: [RepositoryID]
+    public var groupNames: [String]
+    public var customFocus: String?
+    public var tone: String
+    public var outputFormat: RecipeOutputFormat
+    public var maximumCharacters: Int
+    public var privacyProfile: PrivacyProfile
+    public var providerModeOverride: ProviderSelectionMode?
+
+    public init(template: ReportTemplate, name: String? = nil) {
+        self.name = name ?? template.recipe.name
+        purpose = template.version.purpose
+        audience = template.version.audience
+        cadence = template.version.cadence
+        repositoryIDs = template.version.repositoryIDs
+        groupNames = template.version.groupNames
+        customFocus = template.version.customFocus
+        tone = template.version.tone
+        outputFormat = template.version.outputFormat
+        maximumCharacters = template.version.maximumCharacters
+        privacyProfile = template.version.privacyProfile
+        providerModeOverride = template.version.providerModeOverride
+    }
+
+    public var runConfiguration: ReportRunConfiguration {
+        ReportRunConfiguration(
+            purpose: purpose, audience: audience, repositoryIDs: repositoryIDs,
+            groupNames: groupNames, customFocus: customFocus, tone: tone,
+            outputFormat: outputFormat, maximumCharacters: maximumCharacters,
+            privacyProfile: privacyProfile, providerModeOverride: providerModeOverride)
+    }
+}
+
+public enum ReportScheduleCadence: String, Codable, CaseIterable, Sendable {
+    case hourly
+    case daily
+}
+
+public struct ReportSchedule: Codable, Equatable, Sendable, Identifiable {
+    public let id: ReportScheduleID
+    public let name: String
+    public let recipeID: RecipeID
+    public let cadence: ReportScheduleCadence
+    public let repositoryIDs: [RepositoryID]
+    public let groupNames: [String]
+    public let providerModeOverride: ProviderSelectionMode?
+    public let isEnabled: Bool
+    public let createdAt: Date
+    public let updatedAt: Date
+
+    public init(
+        id: ReportScheduleID,
+        name: String,
+        recipeID: RecipeID,
+        cadence: ReportScheduleCadence,
+        repositoryIDs: [RepositoryID] = [],
+        groupNames: [String] = [],
+        providerModeOverride: ProviderSelectionMode? = nil,
+        isEnabled: Bool = true,
+        createdAt: Date,
+        updatedAt: Date
+    ) {
+        self.id = id
+        self.name = name
+        self.recipeID = recipeID
+        self.cadence = cadence
+        self.repositoryIDs = repositoryIDs
+        self.groupNames = groupNames
+        self.providerModeOverride = providerModeOverride
+        self.isEnabled = isEnabled
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+    }
+}
+
+public struct ReportScheduleDraft: Codable, Equatable, Sendable {
+    public var name: String
+    public var recipeID: RecipeID
+    public var cadence: ReportScheduleCadence
+    public var repositoryIDs: [RepositoryID]
+    public var groupNames: [String]
+    public var providerModeOverride: ProviderSelectionMode?
+    public var isEnabled: Bool
+
+    public init(
+        name: String,
+        recipeID: RecipeID,
+        cadence: ReportScheduleCadence,
+        repositoryIDs: [RepositoryID] = [],
+        groupNames: [String] = [],
+        providerModeOverride: ProviderSelectionMode? = nil,
+        isEnabled: Bool = true
+    ) {
+        self.name = name
+        self.recipeID = recipeID
+        self.cadence = cadence
+        self.repositoryIDs = repositoryIDs
+        self.groupNames = groupNames
+        self.providerModeOverride = providerModeOverride
+        self.isEnabled = isEnabled
+    }
+
+    public init(schedule: ReportSchedule) {
+        self.init(
+            name: schedule.name, recipeID: schedule.recipeID, cadence: schedule.cadence,
+            repositoryIDs: schedule.repositoryIDs, groupNames: schedule.groupNames,
+            providerModeOverride: schedule.providerModeOverride, isEnabled: schedule.isEnabled)
+    }
+}
+
 public enum RecipeValidationError: Error, Equatable, LocalizedError {
     case focusTooLong
     case unsafeInstruction(String)
@@ -251,6 +567,23 @@ public enum RecipeValidationError: Error, Equatable, LocalizedError {
             "Custom focus cannot weaken Trackify's evidence or privacy policy (matched: \(phrase))."
         case .invalidMaximumCharacters: "Maximum output length must be between 100 and 2,000 characters."
         }
+    }
+}
+
+public enum ReportRecipeValidator {
+    public static func customFocus(_ input: String) throws -> String {
+        let value = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard value.count <= 1_000 else { throw RecipeValidationError.focusTooLong }
+        let prohibited = [
+            "ignore previous", "ignore the policy", "use tools", "read files",
+            "read credentials", "show credentials", "full transcript", "raw transcript",
+            "system prompt", "execute command", "run command", "disable redaction",
+        ]
+        let lowercased = value.lowercased()
+        if let phrase = prohibited.first(where: lowercased.contains) {
+            throw RecipeValidationError.unsafeInstruction(phrase)
+        }
+        return SensitiveText.redact(value)
     }
 }
 
@@ -353,6 +686,8 @@ public struct ReportRun: Codable, Equatable, Sendable, Identifiable {
     public let failureClass: GenerationFailureClass?
     public let failureDetail: String?
     public let artifactID: ArtifactID?
+    public let configuration: ReportRunConfiguration?
+    public let scheduleID: ReportScheduleID?
 
     public init(
         id: ReportRunID,
@@ -379,7 +714,9 @@ public struct ReportRun: Codable, Equatable, Sendable, Identifiable {
         state: ReportRunState,
         failureClass: GenerationFailureClass? = nil,
         failureDetail: String? = nil,
-        artifactID: ArtifactID? = nil
+        artifactID: ArtifactID? = nil,
+        configuration: ReportRunConfiguration? = nil,
+        scheduleID: ReportScheduleID? = nil
     ) {
         self.id = id
         self.recipeID = recipeID
@@ -406,6 +743,8 @@ public struct ReportRun: Codable, Equatable, Sendable, Identifiable {
         self.failureClass = failureClass
         self.failureDetail = failureDetail
         self.artifactID = artifactID
+        self.configuration = configuration
+        self.scheduleID = scheduleID
     }
 
     public var queueDuration: TimeInterval? { startedAt?.timeIntervalSince(queuedAt) }
@@ -609,6 +948,7 @@ public struct UsageSummary: Codable, Equatable, Sendable {
 
 public struct WorkIntelligenceCounts: Codable, Equatable, Sendable {
     public let recipes: Int
+    public let schedules: Int
     public let runs: Int
     public let pendingRuns: Int
     public let runningRuns: Int
@@ -618,6 +958,7 @@ public struct WorkIntelligenceCounts: Codable, Equatable, Sendable {
 
     public init(
         recipes: Int,
+        schedules: Int = 0,
         runs: Int,
         pendingRuns: Int,
         runningRuns: Int,
@@ -626,6 +967,7 @@ public struct WorkIntelligenceCounts: Codable, Equatable, Sendable {
         deliveryAttempts: Int
     ) {
         self.recipes = recipes
+        self.schedules = schedules
         self.runs = runs
         self.pendingRuns = pendingRuns
         self.runningRuns = runningRuns

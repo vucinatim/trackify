@@ -1,16 +1,16 @@
 # Trackify
 
-Trackify is a passive, native macOS development-work ledger. It observes local Git repositories and supported Codex and Claude Code histories, then produces simple statistics, searchable context, and concise evidence-backed hourly and daily reports.
+Trackify is a passive, native macOS development-work ledger. It observes local Git repositories and supported Codex and Claude Code histories, then produces simple statistics, searchable context, canonical work summaries, and user-configured reports.
 
 The same local ledger is available through the macOS menu-bar application and a first-class `trackify` CLI for coding agents.
 
 > [!IMPORTANT]
-> Trackify V1 and the Goal 2 configurable work-intelligence source implementation are complete. Public distribution still requires the project owner's Developer ID certificate, notarization credentials, Sparkle signing key, and signed-release soak.
+> Trackify V1 through Goal 4 are implemented and locally validated. Goal 5 live evidence is planned. Public distribution is a separate later milestone requiring the project owner's signing and notarization credentials.
 
 ## Principles
 
 - Passive by default: no timers, tasks, or routine manual classification.
-- Evidence before interpretation: imported evidence is durable; activity snapshots, comparisons, and reports are rebuildable.
+- Evidence before interpretation: imported evidence is durable; activity snapshots, summaries, comparisons, and reports are rebuildable.
 - Core history uses durable Git and conversation facts. Optional lifecycle telemetry may improve live status but never manufactures historical work.
 - Completed, unfinished, investigating, waiting, and inactive work remain distinct.
 - Local-first: no Trackify account, server, analytics, or automatic crash upload.
@@ -18,13 +18,15 @@ The same local ledger is available through the macOS menu-bar application and a 
 
 ## Implemented capabilities
 
-- Native Swift/SwiftUI menu-bar app with an interactive historical Overview, unified searchable Activity ledger, and grouped Projects browser.
+- Native Swift/SwiftUI menu-bar app with an interactive historical Overview, unified searchable Activity ledger, grouped Projects browser, configurable Reports workspace, and in-window Settings.
 - Automatic Git repository discovery and deterministic folder-based grouping.
 - Separate versioned Codex CLI/Desktop, Claude Code terminal, and Claude Desktop Code conversation-source adapters.
 - Active evidence hours, LLM turns, commits, files, repository, and line statistics.
-- Deterministic reports plus optional Codex or Claude generation through a persisted, budgeted queue that never blocks collection.
+- Automatic 30-minute, current-work, and daily summary revisions with complete eligible-event coverage, deterministic local fallback, and optional Codex or Claude generation.
+- Rich summary objects contain an overall narrative, dense menu-bar narrative, explicit per-project sections, intent, outcomes, open work, blockers, statistics, coverage, and provenance.
+- User-configured reports consume canonical summaries plus direct evidence through a persisted, budgeted queue that never blocks collection.
 - Versioned report recipes, immutable evidence-linked artifacts, private/team/client/public privacy profiles, and local clipboard/Markdown/JSON delivery.
-- Native Sources, Summaries, Usage, and Recipes preferences with honest per-run token/cost provenance.
+- Native Sources, AI Providers, Usage, and General settings plus report-template editing, one-off prompts, manual generation, history, provenance, and copy.
 - Historical backfill and accelerated virtual-time simulation.
 - Agent-readable installation, diagnostics, context retrieval, and updates.
 
@@ -34,6 +36,9 @@ The same local ledger is available through the macOS menu-bar application and a 
 - [V1 specification](docs/V1.md)
 - [Goal 2 specification](docs/GOAL_2.md)
 - [Goal 2 acceptance audit](docs/GOAL_2_ACCEPTANCE_AUDIT.md)
+- [Goal 3 canonical summaries](docs/GOAL_3_SUMMARIES.md)
+- [Goal 4 canonical evidence integrity](docs/GOAL_4_EVIDENCE_INTEGRITY.md)
+- [Goal 5 live evidence and responsive UI](docs/GOAL_5_LIVE_EVIDENCE.md)
 - [System design](docs/DESIGN.md)
 - [V1 readiness checklist](docs/V1_READINESS.md)
 - [V1 acceptance audit](docs/V1_ACCEPTANCE_AUDIT.md)
@@ -49,7 +54,7 @@ The same local ledger is available through the macOS menu-bar application and a 
 
 ## Privacy
 
-Statistics, search, evidence, and reports are stored locally. When AI reporting is enabled, Trackify sends a bounded, locally redacted evidence packet through the report provider selected during setup. It does not send full repositories, diffs, or transcripts by default.
+Statistics, search, evidence, summaries, and reports are stored locally. When AI summaries or reports are enabled, Trackify sends bounded, locally redacted evidence packets through the selected local CLI. Summary coverage includes complete sanitized user messages and commit messages across chunks; assistant responses are explicitly bounded. Trackify never sends full repositories or diffs.
 
 See [PRIVACY_SECURITY.md](docs/PRIVACY_SECURITY.md) for the precise contract and threat boundary.
 
@@ -76,12 +81,25 @@ swift run trackify context --repo current --since 14d --json
 swift run trackify sources status --json
 swift run trackify providers status --json
 swift run trackify usage runs --since 7d --json
+swift run trackify summaries status --json
+swift run trackify summaries refresh --days 2 --json
+swift run trackify summaries list --limit 20 --json
 swift run trackify recipes list --json
 swift run trackify recipes create --from docs/examples/standup-recipe.json --json
+swift run trackify recipes create --from docs/examples/clockify-entry-recipe.json --json
 swift run trackify recipes preview daily-work-summary --period today --json
+swift run trackify reporters list --json
+swift run trackify reporters create --name "Daily work summary" \
+  --template daily-work-summary --cadence daily --json
+swift run trackify reporters disable <reporter-id>
+swift run trackify reports preview --template stand-up-draft --period today \
+  --instructions "Focus on completed work, current work, and blockers" --json
+swift run trackify reports generate --template stand-up-draft --period today \
+  --instructions "Focus on completed work, current work, and blockers" --json
+swift run trackify reports list --since 7d --json
 swift run trackify artifacts list --since 7d --json
 swift run trackify show session <session-id> --message-limit 20 --json
-swift run trackify show report <report-id> --evidence-limit 20 --json
+swift run trackify show summary <summary-id> --json
 swift run trackify update status --json
 TRACKIFY_ARCHITECTURES=native scripts/build-app-bundle.sh .build/bundle
 ```

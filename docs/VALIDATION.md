@@ -1,12 +1,86 @@
 # Trackify Validation Record
 
-Last updated: 2026-08-06
+Last updated: 2026-08-07
 
 This document records reproducible V1 and Goal 2 checks separately from product design. It does not treat unavailable signing credentials as a successful signed-release test.
 
+## Goal 4 completion protocol
+
+Goal 4 validation is deliberately bounded to today plus the preceding six local
+calendar days. Exhaustive Codex or Claude cache import is not a completion gate.
+The production validation must use the same application use case as the shipped
+app and CLI:
+
+```bash
+trackify data rebuild --from-sources --days 7 --verify --json
+trackify data rebuild --from-sources --days 7 --verify --replace --json
+trackify doctor --json
+```
+
+The retained audit must record the exact half-open coverage interval, per-source
+files considered/opened, bytes read, records observed/accepted, semantic health,
+and a deterministic ledger fingerprint. A second isolated rebuild of that same
+interval must match the fingerprint. The immediate incremental pass must add no
+duplicates, while a subsequently arriving source event must appear through
+ordinary continuous collection.
+
+CLI day/range, Activity, Projects, search, summaries, reports, and agent-context
+results must reconcile with the native Overview, Activity, Projects, and menu
+surfaces for the activated ledger. The fixture privacy audit, complete automated
+suite, deterministic simulation, UI capture matrix, packaged bundle validation,
+and installed-app smoke test remain required. Results belong in this document
+only after the corresponding command has actually passed.
+
+### Goal 4 completion record — 2026-08-07
+
+The production rebuild and an independent guarded dry rebuild both reconstructed
+the exact half-open interval
+`2026-07-31T22:00:00Z..<2026-08-07T15:52:05Z`. Both produced 267 canonical
+work turns, 2,051 canonical work messages, 566 diagnostic records, 37,028
+control records, zero unresolved records, and healthy semantic and SQLite
+audits. Their fingerprints matched exactly:
+
+- canonical work: `dd29c8808105d0f4679e5f11aa495ac338d9f89a42a261c3a214a2e8c56598d3`;
+- normalized evidence: `cbab6a71f9baf654ba539b9f33a96d9b472612a4fd470931c7901de636b02679`.
+
+The bounded read audit recorded:
+
+- Codex current history: 7/7 files opened, 1,160,206,392 bytes, 145,972
+  records observed, and 50,303 accepted; 425 other current-history files and 13
+  archive files were seeded by metadata without opening their contents;
+- Claude Code history: 310/310 candidate files opened, 457,640,825 bytes,
+  91,248 records observed, and 5,464 accepted; 1,174 other files were seeded by
+  metadata without opening their contents;
+- Claude Desktop Code history: no file overlapped the interval; two known files
+  were seeded by metadata without being opened;
+- Git: 60 Personal and 42 Work repositories inspected, producing 170 and 328
+  accepted observations respectively.
+
+Both rebuilds reported that a second collection pass changed no canonical
+history. The activated ledger received a bounded current-day catch-up, after
+which its immediate forward pass added no duplicate event. A later installed-CLI
+pass observed a newly appended Codex source event and advanced the ledger from
+3,307 to 3,308 events through ordinary collection. Passive collection was then
+resumed.
+
+The compatibility audit also found three Claude compacted-context records in
+the window. Their structural `isCompactSummary` and
+`isVisibleInTranscriptOnly` fields now classify them as system control evidence
+under adapter v6; they create no human work turn. The rebuilt ledger contains
+zero unresolved records and no metric-affecting problems. Two non-metric
+heuristics remain visible as warnings without falsely degrading overall health.
+
+User-owned state survived activation: two discovery roots, seven report
+templates, and two disabled scheduled reporters. The installed native
+development bundle is `0.4.0-dev` build `400`; its ad-hoc deep signature, bundled
+CLI, healthy doctor output, running app process, local report preview, and
+forward collection passed. The deterministic UI matrix captured every required
+Overview, Activity, Projects, Reports, and Settings state and was visually
+inspected. Source caches were never modified.
+
 ## Automated checks
 
-- `swift test`: 102 tests across domain, store, engine, adapters, macOS application state, Goal 2 capability discovery, Claude Desktop Code audit ingestion, queue isolation/recovery, usage and budgets, versioned recipes, privacy profiles, immutable artifacts, idempotent delivery, stable pagination, one-year/120-repository query scale, deterministic simulation, migrations, privacy, updates, and CLI surfaces.
+- `swift test`: 134 tests across domain, store, engine, adapters, macOS application state, Goal 2 capability discovery, canonical evidence integrity, bounded rebuild coverage, Claude sidechain and compacted-context classification, Claude Desktop Code audit ingestion, queue isolation/recovery, cross-process provider-generation coalescing, weekly allowance attribution, live menu budget state, budget-fallback recovery without retry churn, provider credit rates, budget migration, usage and budgets, versioned templates, independently managed scheduled reporters, pre-compilation repository-group scoping, run-specific instructions, repeated manual generation, canonical summary coverage/upgrades, internal-message filtering, privacy profiles, immutable artifacts, idempotent delivery, stable pagination, dense hourly and one-year/120-repository query scale, deterministic simulation, migrations, privacy, updates, and CLI surfaces.
 - `swift format lint --recursive --strict`: clean using the repository configuration.
 - `git diff --check`: clean.
 - `scripts/check-fixture-privacy.sh`: sanitized fixture structure and credential/path checks pass.
@@ -23,7 +97,7 @@ This document records reproducible V1 and Goal 2 checks separately from product 
 - Update authority: direct, Homebrew, managed, and development origins select exactly one updater; unsigned or keyless direct builds stay disabled.
 - Provider readiness: Codex login-status success/failure and Claude's explicit authentication-unknown state are covered without reading credential files or launching an interactive Claude command.
 - Cache recovery: JSONL cursors restart safely after atomic file replacement and same-inode truncation; incomplete tails remain retryable and duplicate hook/cache observations remain idempotent.
-- Adapter upgrades: a legacy conversation cursor replays once through message-evidence adapter version 2, then returns to incremental collection without duplicate stable records.
+- Adapter upgrades: a legacy conversation cursor replays once through a newer message-evidence adapter and then returns to incremental collection without duplicate stable records; adapter v6 additionally recognizes Claude compacted transcript context from structural flags.
 - Date-range backfill: conversation import honors the explicit half-open period even after the live cursor reached EOF; Git backfill imports an older requested period independently from a later cursor; both repeat idempotently.
 - Git transitions: clean, dirty, unchanged, clean, and repeated-dirty states retain every real transition without producing events for unchanged polls or collapsing a later repeated state.
 - Subprocess safety: provider commands use a 180-second deadline, authentication probes use 5 seconds, general Git commands use a 300-second ceiling, output remains bounded, and a stuck exact child is terminated and reaped in the regression test.
@@ -42,7 +116,16 @@ This document records reproducible V1 and Goal 2 checks separately from product 
 
 ## Native UI smoke test
 
-`scripts/validate-ui.sh` builds the native app, creates isolated populated and empty ledgers, fixes the UI clock, and disables background collection and login-item mutation. It captures Overview in seven-day, Today/hourly, and historical-day/hourly modes; Activity and Projects at the default window size; Activity at 1600×1100 points; empty Overview/Activity states; and Goal 2 Sources, Summaries, Usage, and Recipes Preferences in light and dark appearance. The harness verifies that every window appears at the requested dimensions. The screenshots were visually inspected for hierarchy, clipping, date selection, correct hourly versus daily chart semantics, sticky-header spacing, report/evidence distinction, provider/source separation, honest cost language, recipe/artifact provenance, empty-state centering, and tall-window fill. The app did not read the normal ledger or invoke a report provider during this test.
+`scripts/validate-ui.sh` builds the native app, creates isolated populated and empty ledgers, fixes the UI clock, and disables background collection and login-item mutation. It captures Overview in Today, historical-day, seven-day, and 30-day modes, including every selectable chart metric and an edge-clamped tooltip; Activity and Projects at the default window size; populated and empty Reports History at default and tall window sizes; Reports Templates and Scheduled; the New Report composer and New Template editor; Activity at 1600×1100 points; empty Overview/Activity states; and in-window Sources, AI Providers, and Usage settings in light and dark appearance. The harness verifies that every window appears at the requested dimensions and resolves the exact validation process before capture. The screenshots were visually inspected for hierarchy, clipping, stable date-control positions, complete chart domains, hourly density across ranges, major/minor axis guides, selected-metric feedback, tooltip containment, sticky-header spacing, report/template/reporter separation, full-size item-backed sheets, provider/source separation, honest cost language, template/artifact provenance, empty-state centering, and tall-window fill. The app did not read the normal ledger or invoke a report provider during this test.
+
+The full matrix remains the release and broad-refactor check. Isolated UI changes use named cases so validation stays proportional:
+
+```bash
+zsh scripts/validate-ui.sh .build/ui-validation-focused \
+  reports-history-empty reports-history-empty-tall
+```
+
+When no case names follow the output directory, the script captures the complete matrix.
 
 ## Goal 2 work-intelligence validation
 
@@ -76,7 +159,7 @@ This document records reproducible V1 and Goal 2 checks separately from product 
   dashboard snapshots, grouped catalog, and bounded recent-event query in under
   one second on the reference machine.
 - Isolated CLI validation exercised source/provider status, usage/runs, recipes,
-  artifacts, stable page cursors, bounded artifact-list summaries, explicit
+  scheduled reporter create/update/enable/disable/delete, artifacts, stable page cursors, bounded artifact-list summaries, explicit
   full-provenance lookup, Markdown, and versioned JSON against the 42-day
   showcase ledger.
 - The installed production-ledger check reduced a two-artifact JSON list from
@@ -88,10 +171,10 @@ The per-criterion result and remaining release-owner gates are in
 
 ## Goal 2 packaged local build
 
-The final source state was packaged as release-mode Universal build `0.2.0`
-(`201`) with the bundled CLI and Sparkle framework. Deep ad-hoc signature
+The final source state was packaged as release-mode Universal development build `0.3.0-dev`
+(`307`) with the bundled CLI and Sparkle framework. Deep ad-hoc signature
 validation, bundle metadata, Universal architecture, bundled CLI version
-resolution, fresh schema-6 ledgers, and diagnostics all passed natively on arm64
+resolution, fresh schema-8 ledgers, and diagnostics all passed natively on arm64
 and through Rosetta on x86_64. The app, CLI, Sparkle framework, Autoupdate,
 Updater, Downloader XPC, and Installer XPC all contain both slices. The
 development installer preserved
@@ -100,10 +183,39 @@ the previous application as a timestamped backup, installed the new build at
 link, launched the app, and diagnosed the existing production ledger as healthy.
 The installed CLI reports all four supported conversation-history locations and
 selects ready Codex when Claude generation readiness is unverified.
+The installed production ledger migrated through `0008_report_schedules`,
+seeded its hourly and daily reporters, passed integrity diagnostics, and the
+launched app process remained healthy. Both installed binaries contain arm64
+and x86_64 slices.
 The first reconciliation after launch completed in about 96 seconds against the
 existing 873 MB ledger and large Codex/Claude caches, advanced the collector
 heartbeat, returned the app process to idle, and left SQLite integrity healthy
 with no collector issue.
+
+Build 307 adds the selectable Overview trend. Evidence hours, LLM turns,
+commits, and committed lines each drive the same hourly bar-chart surface across
+Day, 7-day, and 30-day ranges. Ordered non-overlapping snapshots are partitioned
+in one pass, and a regression proves that the dense buckets preserve the totals
+of the complete range snapshot. Deterministic captures verified stable date
+controls, end-to-end domains, hour/day guide hierarchy, selected-card feedback,
+and a tooltip clamped above and inside the chart panel. The packaged and
+installed app and CLI both contain arm64 and x86_64 slices; strict deep signature,
+version/build metadata, the running installed process, and production-ledger
+diagnostics all passed.
+
+The Evidence hours selection intentionally plots evidence-item density within
+each hour while retaining hours-with-evidence as the card total. A macOS model
+regression prevents this drill-down from reverting to binary `0/1` occupancy,
+which makes adjacent active hours appear to be continuous measured work.
+
+Build 307 also resolves template group names through discovery-root membership
+before the bounded evidence compiler ranks events. Declared scopes fail closed
+if they were not resolved before packet-local repository aliases are created. A
+live Work-scoped Clockify preview selected both Work repositories, 12 useful
+items from 539 candidates, and no Personal repositories. Its single explicit
+Codex run used a 5.5 KB packet, 15,444 reported input tokens, 287 output tokens,
+and stored an evidence-linked in-progress artifact; Codex CLI did not report a
+billing amount.
 
 An additional unsigned direct-origin contract build proved that app-local,
 external-symlink, native, and Rosetta CLI invocation all resolve version `0.2.0`,
@@ -195,6 +307,56 @@ active contexts. The earlier suffix-based inspection estimated 164,591 input
 tokens for the same busy-day hourly shape before its daily report, so measured
 hourly input fell by approximately 6.7x. `trackify report --preview` and
 `--preview-hour` performed the measurement and made no provider calls.
+
+## Goal 3 canonical summary validation
+
+The schema-0009 implementation has automated coverage for:
+
+- private summary tables, evidence/child links, immutable revisions, search,
+  run telemetry, and the complete migration list;
+- full long user-message and commit-message reconstruction across chunks;
+- explicit assistant truncation metadata and a hard 20 KiB packet ceiling;
+- project-structured model content plus dedicated compact menu copy;
+- stable closed-half-hour identity, zero provider work on unchanged refresh,
+  and late-evidence leaf/parent revision rebuilding;
+- daily configurable-report compilation from complete canonical summaries;
+- provider/report usage aggregation and fallback behavior;
+- fixed-clock AppModel behavior and all prior collection, privacy, queue, and
+  UI-query regressions.
+
+The isolated simulator now runs the same local SummaryCoordinator after evidence
+ingestion, so `simulate --days 2` and the showcase ledger contain inspectable
+segment/current/day summary objects without provider calls.
+
+The final 42-day native validation ledger generated 143 immutable summary
+revisions with no provider calls or issues. All 31 retained day summaries fit
+their complete ordered child coverage into one parent packet. The populated,
+empty, historical, chart-tooltip, Activity, Projects, Reports, composer,
+template-editor, and in-window settings screenshot matrix passed.
+
+The production ledger migrated through schema 0009 with a private backup and
+passed SQLite integrity checks. The final Codex-backed day summary covered all
+1,245 eligible events through 29 ordered half-hour children across
+`novartis-ai-backend`, `novartis-ai-frontend`, `trackify`, and `twittex`. Its
+single 15,679-byte parent packet estimated 19,920 input tokens; Codex reported
+18,499 input and 2,293 output tokens. The structured result contains a detailed
+project section for every project, preserves explicit unfinished work, and has
+a separately authored 375-character menu narrative. Transport/control records,
+temporary paths, and AGENTS instructions do not appear in the result. The CLI
+reported cost as unknown because Codex CLI emitted no billing amount.
+
+The final source state was packaged and installed as release-mode Universal
+development build `0.3.0-dev` (`311`). Deep ad-hoc signature verification
+passed, and both the app and bundled CLI contain `arm64` and `x86_64` slices.
+The development installer preserved the previous app, installed and launched
+`~/Applications/Trackify.app`, refreshed `~/.local/bin/trackify`, and diagnosed
+the 873 MB production ledger as healthy through schema 0009. An installed-CLI
+smoke read returned the same version-4 Codex summary, four project sections,
+and complete 1,245/1,245 coverage. Reopening the app triggered no additional
+provider call. The three deliberately triggered live validation generations
+used 72,607 input and 8,511 output tokens in total; the ordinary 50,000-token
+daily limit was restored afterward. Monetary cost remains unknown because the
+Codex CLI did not expose billing data.
 
 ## Remaining release validation
 

@@ -5,10 +5,11 @@ import SwiftUI
 struct TrackifyMacApp: App {
     @StateObject private var model = AppModel()
     @StateObject private var updates = UpdateController()
+    @StateObject private var router = AppRouter()
 
     var body: some Scene {
         MenuBarExtra {
-            MenuBarView(model: model, updates: updates)
+            MenuBarView(model: model, updates: updates, router: router)
         } label: {
             MenuBarLabel(
                 model: model,
@@ -20,22 +21,13 @@ struct TrackifyMacApp: App {
 
         mainWindow
 
-        Settings {
-            SettingsView(model: model, updates: updates)
-                .frame(width: 720, height: 560)
-        }
+            .commands { TrackifyCommands(router: router) }
     }
 
     private var mainWindow: some Scene {
         Window("Trackify", id: "main") {
             Group {
-                if model.isUIValidation,
-                    ProcessInfo.processInfo.environment["TRACKIFY_UI_SCREEN"] == "settings"
-                {
-                    SettingsView(model: model, updates: updates)
-                } else {
-                    MainWindow(model: model)
-                }
+                MainWindow(model: model, updates: updates, router: router)
             }
             .preferredColorScheme(validationColorScheme)
             .frame(minWidth: 1_040, minHeight: 700)
@@ -91,6 +83,36 @@ struct TrackifyMacApp: App {
     }
 }
 
+private struct TrackifyCommands: Commands {
+    @ObservedObject var router: AppRouter
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some Commands {
+        CommandGroup(replacing: .appSettings) {
+            Button("Settings…") {
+                router.selection = .settings
+                openWindow(id: "main")
+                NSApp.activate(ignoringOtherApps: true)
+                DispatchQueue.main.async {
+                    NSApp.windows.first(where: { $0.title == "Trackify" })?.makeKeyAndOrderFront(nil)
+                }
+            }
+            .keyboardShortcut(",", modifiers: .command)
+        }
+    }
+}
+
+@MainActor
+final class AppRouter: ObservableObject {
+    @Published var selection: MainWindow.Section
+
+    init() {
+        selection =
+            ProcessInfo.processInfo.environment["TRACKIFY_UI_SCREEN"]
+            .flatMap(MainWindow.Section.init(rawValue:)) ?? .overview
+    }
+}
+
 private struct ValidationWindowSizing: NSViewRepresentable {
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
@@ -109,7 +131,13 @@ private struct ValidationWindowSizing: NSViewRepresentable {
             let height = environment["TRACKIFY_UI_HEIGHT"].flatMap(Double.init)
         else { return }
         DispatchQueue.main.async {
-            view.window?.setContentSize(NSSize(width: width, height: height))
+            guard let window = view.window else { return }
+            window.setContentSize(NSSize(width: width, height: height))
+            window.collectionBehavior.insert(.moveToActiveSpace)
+            NSApp.setActivationPolicy(.regular)
+            NSApp.activate(ignoringOtherApps: true)
+            window.makeKeyAndOrderFront(nil)
+            window.orderFrontRegardless()
         }
     }
 }

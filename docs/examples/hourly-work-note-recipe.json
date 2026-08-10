@@ -1,0 +1,15 @@
+{
+  "id": "hourly-work-summary-ai",
+  "name": "Hourly work summary · AI",
+  "purpose": "Explain the meaningful work thread and its current state for one hour",
+  "audience": "self",
+  "cadence": "hourly",
+  "repositoryIDs": [],
+  "groupNames": [],
+  "customFocus": "Write a short narrative of the meaningful work performed during this hour. Lead with user intent and concrete outcomes, group related evidence instead of listing events, name the relevant projects, and end with an honest state: completed, in progress, blocked, investigating, or quiet. Mention commits or tests only when they clarify the work. Do not invent duration or treat repository activity as proof that a feature is complete.",
+  "tone": "concise, direct, and factual",
+  "outputFormat": "plain_text",
+  "maximumCharacters": 900,
+  "privacyProfile": "private",
+  "providerModeOverride": "codex"
+}

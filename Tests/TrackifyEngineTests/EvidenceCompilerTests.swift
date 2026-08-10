@@ -198,7 +198,7 @@ struct EvidenceCompilerTests {
                 at: day.addingTimeInterval(20 * 3_600),
                 store: store
             )
-            try saveHourlyReport(
+            try saveSegmentSummary(
                 id: "morning-report",
                 start: day.addingTimeInterval(9 * 3_600),
                 state: .completed,
@@ -206,7 +206,7 @@ struct EvidenceCompilerTests {
                 evidenceIDs: [EvidenceID("morning-work-evidence")],
                 store: store
             )
-            try saveHourlyReport(
+            try saveSegmentSummary(
                 id: "quiet-report",
                 start: day.addingTimeInterval(13 * 3_600),
                 state: .noActivity,
@@ -214,7 +214,7 @@ struct EvidenceCompilerTests {
                 evidenceIDs: [],
                 store: store
             )
-            try saveHourlyReport(
+            try saveSegmentSummary(
                 id: "evening-report",
                 start: day.addingTimeInterval(20 * 3_600),
                 state: .inProgress,
@@ -224,21 +224,21 @@ struct EvidenceCompilerTests {
             )
 
             let packet = try ReportGenerator().evidencePacket(store: store, range: range, cutoff: range.end)
-            #expect(packet.priorReports.map(\.alias) == ["h1", "h2"])
-            #expect(packet.priorReports.map(\.summary).contains { $0.contains("morning") })
-            #expect(packet.priorReports.map(\.summary).contains { $0.contains("evening") })
-            #expect(packet.selection.totalPriorReportCount == 3)
-            #expect(packet.selection.selectedPriorReportCount == 2)
-            #expect(packet.selection.omittedQuietReportCount == 1)
+            #expect(packet.priorSummaries.map(\.alias) == ["s1", "s2"])
+            #expect(packet.priorSummaries.map(\.summary).contains { $0.contains("morning") })
+            #expect(packet.priorSummaries.map(\.summary).contains { $0.contains("evening") })
+            #expect(packet.selection.totalPriorSummaryCount == 3)
+            #expect(packet.selection.selectedPriorSummaryCount == 2)
+            #expect(packet.selection.omittedQuietSummaryCount == 1)
             #expect(
-                packet.evidenceIDs(for: ["h1", "h2"]) == [
+                packet.evidenceIDs(for: ["s1", "s2"]) == [
                     EvidenceID("morning-work-evidence"), EvidenceID("evening-work-evidence"),
                 ])
             #expect(packet.serializedByteCount <= 20 * 1_024)
 
             let encoded = try encodedString(packet)
-            #expect(encoded.contains("priorReports"))
-            #expect(encoded.contains("omittedQuietReportCount"))
+            #expect(encoded.contains("priorSummaries"))
+            #expect(encoded.contains("omittedQuietSummaryCount"))
             #expect(!encoded.contains("morning-work-evidence"))
             #expect(!encoded.contains("evening-work-evidence"))
 
@@ -246,7 +246,7 @@ struct EvidenceCompilerTests {
                 store: store,
                 range: range,
                 cutoff: range.end,
-                provider: PriorReportSummaryProvider()
+                provider: PriorSummaryProvider()
             )
             #expect(
                 report.evidenceIDs == [
@@ -323,6 +323,308 @@ struct EvidenceCompilerTests {
             #expect(report.evidenceIDs == [EvidenceID("alias-tree-evidence")])
         }
     }
+
+    @Test("Canonical summary coverage preserves full intent and commits while bounding assistant text")
+    func canonicalSummaryCoverage() async throws {
+        try await withCompilerStore { store in
+            let start = Date(timeIntervalSince1970: 1_754_294_400)
+            let range = DateInterval(start: start, duration: 1_800)
+            let repository = try addRepository(
+                "summary-coverage-repo", name: "Trackify", store: store, at: start)
+            let sessionID = SessionID("summary-coverage-session")
+            try store.upsert(
+                session: ConversationSession(
+                    id: sessionID, source: .codex, sourceSessionID: sessionID.rawValue,
+                    startedAt: start, lastObservedAt: range.end, state: .inProgress))
+            let userText = "USER-BEGIN-" + String(repeating: "intent detail ", count: 750) + "-USER-END"
+            let assistantText =
+                "ASSISTANT-BEGIN-" + String(repeating: "implementation detail ", count: 180)
+                + "-ASSISTANT-END"
+            let commitMessage =
+                "COMMIT-BEGIN-" + String(repeating: "complete commit detail ", count: 420)
+                + "-COMMIT-END"
+            try addMessage(
+                "summary-user", text: userText, role: .user,
+                repositoryID: repository.id, sessionID: sessionID,
+                at: start.addingTimeInterval(60), store: store)
+            try addMessage(
+                "summary-assistant", text: assistantText, role: .assistant,
+                repositoryID: repository.id, sessionID: sessionID,
+                at: start.addingTimeInterval(120), store: store)
+            try store.upsert(
+                commit: GitCommit(
+                    id: "summary-commit", repositoryID: repository.id, hash: "abcdef123456",
+                    authorTime: start.addingTimeInterval(180), message: commitMessage,
+                    additions: 20, deletions: 2, filesChanged: 3,
+                    firstObservedAt: start, lastObservedAt: start, isReachable: true))
+            try addEvent(
+                "summary-commit-event", kind: .gitCommitObserved,
+                repositoryID: repository.id, state: .completed,
+                payload: [
+                    "hash": "abcdef123456", "message": commitMessage,
+                    "additions": "20", "deletions": "2", "filesChanged": "3",
+                ],
+                at: start.addingTimeInterval(180), store: store)
+
+            let compilation = try SummaryCoverageCompiler().compile(
+                store: store, range: range, cutoff: range.end)
+            let events = compilation.chunks.flatMap(\.events)
+            let userFragments = events.filter { $0.messageRole == MessageRole.user }
+                .sorted { ($0.fragmentIndex ?? 1) < ($1.fragmentIndex ?? 1) }
+            let commitFragments = events.filter { $0.kind == .gitCommitObserved }
+                .sorted { ($0.fragmentIndex ?? 1) < ($1.fragmentIndex ?? 1) }
+            guard
+                let assistant = events.first(where: {
+                    $0.messageRole?.rawValue == MessageRole.assistant.rawValue
+                })
+            else {
+                Issue.record("Expected the assistant message in canonical summary coverage.")
+                return
+            }
+
+            #expect(userFragments.compactMap(\.messageExcerpt).joined() == userText)
+            #expect(commitFragments.compactMap { $0.payload["message"] }.joined() == commitMessage)
+            #expect(assistant.wasTruncated)
+            #expect(assistant.originalCharacterCount == assistantText.count)
+            #expect((assistant.messageExcerpt?.count ?? 0) < assistantText.count)
+            #expect(compilation.coverage.eligibleEventCount == 3)
+            #expect(compilation.coverage.coveredEventCount == 3)
+            #expect(compilation.coverage.truncatedAssistantCount == 1)
+            #expect(compilation.coverage.isComplete)
+            #expect(compilation.chunks.allSatisfy { $0.serializedByteCount <= 20 * 1_024 })
+        }
+    }
+
+    @Test("Summary coordinator persists project structure, compact copy, hierarchy, and stable revisions")
+    func canonicalSummaryHierarchy() async throws {
+        try await withCompilerStore { store in
+            let day = Date(timeIntervalSince1970: 1_754_284_800)
+            let now = day.addingTimeInterval(10 * 3_600 + 10 * 60)
+            let first = try addRepository("summary-project-a", name: "Trackify", store: store, at: day)
+            let second = try addRepository("summary-project-b", name: "ClientApp", store: store, at: day)
+            try addEvent(
+                "summary-a-work", kind: .gitWorkingTreeChanged,
+                repositoryID: first.id, state: .inProgress,
+                payload: ["clean": "false", "changedFiles": "2"],
+                at: day.addingTimeInterval(9 * 3_600 + 5 * 60), store: store)
+            try addEvent(
+                "summary-b-work", kind: .gitWorkingTreeChanged,
+                repositoryID: second.id, state: .inProgress,
+                payload: ["clean": "false", "changedFiles": "1"],
+                at: day.addingTimeInterval(9 * 3_600 + 10 * 60), store: store)
+            let counter = ProviderInvocationCounter()
+            let coordinator = SummaryCoordinator(
+                providerFactory: { _, _ in StructuredSummaryProvider(counter: counter) },
+                allowanceReader: NoProviderAllowanceReader(),
+                availableProvider: { _, _, _ in .codex })
+            let settings = TrackifySettings(
+                providerSelection: .codex,
+                generationBudgets: GenerationBudgets(
+                    maximumCallsPerDay: 20, dailyTokenLimit: 500_000,
+                    monthlyTokenLimit: 5_000_000),
+                automaticSummariesUseLLM: true)
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+
+            let initial = await coordinator.refresh(
+                store: store, settings: settings, now: now,
+                calendar: calendar, lookbackDays: 1)
+            #expect(initial.issues.isEmpty)
+            #expect(initial.generated.count == 4)
+            let current = try #require(try store.latestSummary(kind: .current))
+            #expect(current.content.compactNarrative == "Dense menu line.")
+            #expect(Set(current.content.projectSections.map(\.project)) == ["Trackify", "ClientApp"])
+            #expect(current.childSummaryIDs.count == 2)
+            #expect(current.coverage.isComplete)
+
+            let unchanged = await coordinator.refresh(
+                store: store, settings: settings, now: now,
+                calendar: calendar, lookbackDays: 1)
+            #expect(unchanged.generated.isEmpty)
+            #expect(await counter.value == 4)
+
+            try addEvent(
+                "late-summary-work", kind: .testFinished,
+                repositoryID: first.id, state: .completed,
+                payload: ["suite": "Summary tests", "result": "passed"],
+                at: day.addingTimeInterval(9 * 3_600 + 20 * 60), store: store)
+            let revised = await coordinator.refresh(
+                store: store, settings: settings, now: now,
+                calendar: calendar, lookbackDays: 1)
+            #expect(revised.issues.isEmpty)
+            #expect(revised.generated.count == 3)
+            let segments = try store.summaries(kinds: [.segment], limit: 20)
+            #expect(segments.map(\.revision).max() == 2)
+            #expect(await counter.value == 7)
+
+            let reportPeriod = try #require(calendar.dateInterval(of: .day, for: now))
+            let run = try ReportQueue().enqueueOnDemand(
+                store: store, settings: TrackifySettings(providerSelection: .localOnly),
+                recipeID: RecipeID("daily-work-summary"), period: reportPeriod, now: now)
+            let latestDay = try #require(
+                try store.latestSummary(kind: .day, overlapping: reportPeriod))
+            #expect(try store.reportRunSummaryIDs(id: run.id) == [latestDay.id])
+        }
+    }
+
+    @Test("A local summary upgrades once a selected provider becomes ready")
+    func localSummaryProviderUpgrade() async throws {
+        try await withCompilerStore { store in
+            let day = Date(timeIntervalSince1970: 1_754_284_800)
+            let now = day.addingTimeInterval(10 * 3_600 + 10 * 60)
+            let repository = try addRepository(
+                "summary-upgrade", name: "Trackify", store: store, at: day)
+            try addEvent(
+                "summary-upgrade-work", kind: .gitWorkingTreeChanged,
+                repositoryID: repository.id, state: .inProgress,
+                payload: ["clean": "false", "changedFiles": "2"],
+                at: day.addingTimeInterval(9 * 3_600 + 5 * 60), store: store)
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+
+            let local = await SummaryCoordinator().refresh(
+                store: store,
+                settings: TrackifySettings(providerSelection: .localOnly),
+                now: now, calendar: calendar, lookbackDays: 1)
+            #expect(local.issues.isEmpty)
+            let localCurrent = try #require(try store.latestSummary(kind: .current))
+            #expect(localCurrent.provider == nil)
+
+            let counter = ProviderInvocationCounter()
+            let coordinator = SummaryCoordinator(
+                providerFactory: { _, _ in StructuredSummaryProvider(counter: counter) },
+                allowanceReader: NoProviderAllowanceReader(),
+                availableProvider: { _, _, _ in .codex })
+            let upgraded = await coordinator.refresh(
+                store: store,
+                settings: TrackifySettings(
+                    providerSelection: .codex,
+                    generationBudgets: GenerationBudgets(
+                        maximumCallsPerDay: 20, dailyTokenLimit: 500_000,
+                        monthlyTokenLimit: 5_000_000),
+                    automaticSummariesUseLLM: true),
+                now: now, calendar: calendar, lookbackDays: 1)
+            #expect(upgraded.issues.isEmpty)
+            let modelCurrent = try #require(try store.latestSummary(kind: .current))
+            #expect(modelCurrent.provider == .codex)
+            #expect(modelCurrent.revision == localCurrent.revision + 1)
+            #expect(await counter.value > 0)
+        }
+    }
+
+    @Test("A budget fallback stays bounded and upgrades immediately after recovery")
+    func budgetFallbackRecovery() async throws {
+        try await withCompilerStore { store in
+            let day = Date(timeIntervalSince1970: 1_754_284_800)
+            let now = day.addingTimeInterval(10 * 3_600 + 10 * 60)
+            let repository = try addRepository(
+                "summary-budget-recovery", name: "Trackify", store: store, at: day)
+            try addEvent(
+                "summary-budget-recovery-work", kind: .gitWorkingTreeChanged,
+                repositoryID: repository.id, state: .inProgress,
+                payload: ["clean": "false", "changedFiles": "2"],
+                at: day.addingTimeInterval(9 * 3_600 + 5 * 60), store: store)
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+            let counter = ProviderInvocationCounter()
+            let coordinator = SummaryCoordinator(
+                providerFactory: { _, _ in StructuredSummaryProvider(counter: counter) },
+                allowanceReader: NoProviderAllowanceReader(),
+                availableProvider: { _, _, _ in .codex })
+            let blocked = TrackifySettings(
+                providerSelection: .codex,
+                generationBudgets: GenerationBudgets(
+                    maximumCallsPerDay: 20, dailyTokenLimit: 1_000,
+                    monthlyTokenLimit: 5_000_000),
+                automaticSummariesUseLLM: true)
+
+            let fallback = await coordinator.refresh(
+                store: store, settings: blocked, now: now,
+                calendar: calendar, lookbackDays: 1)
+            #expect(fallback.issues.isEmpty)
+            #expect(await counter.value == 0)
+            #expect(try store.latestSummary(kind: .current)?.provider == nil)
+            #expect(try store.summaryRuns(limit: 20).contains { $0.failureClass == .budget })
+            let fallbackRunCount = try store.summaryRuns(limit: 100).count
+
+            let stillBlocked = await coordinator.refresh(
+                store: store, settings: blocked, now: now,
+                calendar: calendar, lookbackDays: 1)
+            #expect(stillBlocked.generated.isEmpty)
+            #expect(try store.summaryRuns(limit: 100).count == fallbackRunCount)
+            #expect(await counter.value == 0)
+
+            let recovered = TrackifySettings(
+                providerSelection: .codex,
+                generationBudgets: GenerationBudgets(
+                    maximumCallsPerDay: 20, dailyTokenLimit: 500_000,
+                    monthlyTokenLimit: 5_000_000),
+                automaticSummariesUseLLM: true)
+            let upgraded = await coordinator.refresh(
+                store: store, settings: recovered, now: now,
+                calendar: calendar, lookbackDays: 1)
+            #expect(upgraded.issues.isEmpty)
+            #expect(try store.latestSummary(kind: .current)?.provider == .codex)
+            #expect(await counter.value > 0)
+        }
+    }
+
+    @Test("Concurrent summary refreshes coalesce before invoking a provider")
+    func concurrentSummaryRefreshCoalesces() async throws {
+        try await withCompilerStore { store in
+            let now = Date(timeIntervalSince1970: 1_754_320_800)
+            let acquired = try store.acquireLease(
+                name: ProviderGenerationLease.name, ownerID: "another-refresh",
+                now: now, duration: 300)
+            #expect(acquired)
+            let counter = ProviderInvocationCounter()
+            let coordinator = SummaryCoordinator(
+                providerFactory: { _, _ in StructuredSummaryProvider(counter: counter) },
+                allowanceReader: NoProviderAllowanceReader(),
+                availableProvider: { _, _, _ in .codex })
+            let result = await coordinator.refresh(
+                store: store,
+                settings: TrackifySettings(
+                    providerSelection: .codex, automaticSummariesUseLLM: true),
+                now: now, lookbackDays: 1)
+
+            #expect(result.generated.isEmpty)
+            #expect(result.issues.isEmpty)
+            #expect(await counter.value == 0)
+        }
+    }
+}
+
+private actor ProviderInvocationCounter {
+    private var count = 0
+    func increment() { count += 1 }
+    var value: Int { count }
+}
+
+private struct StructuredSummaryProvider: SummaryProvider {
+    let id = "structured-summary-test"
+    let model = "fixture-model"
+    let counter: ProviderInvocationCounter
+
+    func summarize(_ packet: ReportEvidencePacket) async throws -> ProviderSummary {
+        await counter.increment()
+        return ProviderSummary(
+            summary: "Trackify and ClientApp work was captured with project-specific detail.",
+            compactSummary: "Dense menu line.", topics: ["summaries"],
+            evidenceAliases: Array(packet.evidenceAliases).sorted(),
+            projects: ["Trackify", "ClientApp"],
+            projectSummaries: [
+                SummaryProjectSection(
+                    project: "Trackify", narrative: "Implemented canonical summaries.",
+                    outcomes: ["Stored structured summary data."], openWork: ["Validate UI."]),
+                SummaryProjectSection(
+                    project: "ClientApp", narrative: "Tracked parallel client work.",
+                    intents: ["Keep the client context visible."]),
+            ],
+            intents: ["Build canonical summaries."],
+            outcomes: ["Structured summaries persisted."],
+            openWork: ["Validate UI."], blockers: [])
+    }
 }
 
 private struct AliasSummaryProvider: SummaryProvider {
@@ -338,7 +640,7 @@ private struct AliasSummaryProvider: SummaryProvider {
     }
 }
 
-private struct PriorReportSummaryProvider: SummaryProvider {
+private struct PriorSummaryProvider: SummaryProvider {
     let id = "prior-report-test"
     let model = "fixture"
 
@@ -346,7 +648,7 @@ private struct PriorReportSummaryProvider: SummaryProvider {
         ProviderSummary(
             summary: "Morning work completed and evening validation remained in progress.",
             topics: ["daily hierarchy"],
-            evidenceAliases: packet.priorReports.map(\.alias)
+            evidenceAliases: packet.priorSummaries.map(\.alias)
         )
     }
 }
@@ -442,7 +744,7 @@ private func addEvent(
     )
 }
 
-private func saveHourlyReport(
+private func saveSegmentSummary(
     id: String,
     start: Date,
     state: ReportPeriodState,
@@ -451,18 +753,18 @@ private func saveHourlyReport(
     store: LedgerStore
 ) throws {
     try store.save(
-        report: WorkReport(
-            id: ReportID(id),
-            periodStart: start,
-            periodEnd: start.addingTimeInterval(3_600),
-            state: state,
-            summary: summary,
-            evidenceIDs: evidenceIDs,
-            provider: nil,
-            model: nil,
-            generatorVersion: "fixture",
-            revision: 1
-        ))
+        summary: WorkSummary(
+            id: SummaryID(id), kind: .segment,
+            periodStart: start, periodEnd: start.addingTimeInterval(3_600),
+            generatedAt: start.addingTimeInterval(3_600), state: state,
+            content: SummaryContent(narrative: summary),
+            evidenceIDs: evidenceIDs, generationSource: .local,
+            generatorVersion: "fixture", promptVersion: "fixture",
+            schemaVersion: "work-summary-v1", sourceFingerprint: id,
+            coverage: SummaryCoverage(
+                eligibleEventCount: evidenceIDs.count,
+                coveredEventCount: evidenceIDs.count),
+            revision: 1))
 }
 
 private func encodedString(_ packet: ReportEvidencePacket) throws -> String {

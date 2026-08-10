@@ -1,6 +1,6 @@
 # Goal 2 Acceptance Audit
 
-Status: Source implementation accepted; public release gates pending
+Status: Goal 2 product implementation accepted; release gates tracked separately
 Last updated: 2026-08-06
 
 This is the evidence-backed closure record for the 18 acceptance criteria in
@@ -25,19 +25,20 @@ notarization, or real elapsed soak evidence as successful.
 | 12 | Preserve V1 reports | Proven locally | Migration 0006 creates immutable `legacy:<report-id>` artifacts with the original report and evidence links and starts no provider process. |
 | 13 | Immutable traceable artifacts | Proven locally | Insert-only database trigger and store tests preserve exact recipe version, run, period state, revision, scope, evidence, and generation provenance. |
 | 14 | Safe local delivery | Proven locally | Clipboard, Markdown, versioned JSON, and mock destinations enforce privacy rank, permissions, private files, no conflicting overwrite, and idempotency. |
-| 15 | App/CLI parity | Proven locally | Native Preferences and CLI expose source/provider selection, budgets, usage/runs, recipes, artifacts, and provenance; growing run/artifact lists use stable opaque cursors and bounded list summaries, while explicit show/export commands retain full provenance. |
+| 15 | App/CLI parity | Proven locally | The native Reports workspace and `reports`/`recipes` CLI expose template management, one-off instructions, preview, manual generation, history, copy, usage, and provenance. Settings expose source/provider selection and budgets. |
 | 16 | Credential boundary | Proven locally | Discovery uses documented executable/version/status commands only. The Claude Desktop adapter imports audit transcript records but never reads `.audit-key`, retains HMACs, or decodes account/configuration fields. |
 | 17 | Fixed-clock and install matrix | Partially proven | Fixed-clock foundation/showcase, source-state fixtures, light/dark Preferences, packaged CLI, and local install pass. The installed Universal candidate and fresh ledgers execute natively on arm64 and through Rosetta on x86_64. A live Codex synthetic run succeeded with emitted usage; the newest Claude Desktop Code CLI correctly reported its expired OAuth context as an authentication failure. A successful Claude reconciliation and the full workplace-machine matrix remain release validation. |
 | 18 | Signed RC and soak | External release gate | Source CI, privacy, Universal package, deep ad-hoc/local signing, direct-origin routing, and simulated failure/wake recovery pass. Developer ID signing, notarization/stapling, Sparkle enclosure signing, and a seven-day real release-build soak require protected release credentials and elapsed operation. |
 
 ## Additional measured checks
 
-- 102 automated tests pass across eight suites.
+- The full automated test suite passes across eight suites, including repeated
+  manual generation, immutable per-run configuration, and internal-message filtering.
 - A synthetic 120-repository, 365-day, 2,190-event ledger produced all 365
   dashboard snapshots, the grouped repository catalog, and the bounded latest
   500 events in under one second on the reference machine.
-- Goal 2 Preferences screenshots pass in light and dark appearance for Sources,
-  Summaries, Usage, and Recipes alongside the existing main-window matrix.
+- Goal 2 screenshots pass for the Reports workspace and in-window Sources,
+  AI Providers, Usage, and General settings alongside the existing main-window matrix.
 - The packaged CLI contract was exercised against an isolated 42-day showcase
   ledger for source/provider status, usage, recipes, artifacts, Markdown, and
   versioned JSON.
@@ -52,9 +53,9 @@ notarization, or real elapsed soak evidence as successful.
   last-import time are honestly labeled as deduplicated Codex/Claude family
   ledger metrics because current and archived caches can overlap.
 
-## Remaining release-owner procedure
+## Separate release-owner procedure
 
-These are validation gates, not missing architecture:
+These are distribution gates, not missing Goal 2 product features:
 
 1. Add the protected Developer ID Application certificate, notarization
    credentials, and Sparkle EdDSA key to the GitHub release environment.

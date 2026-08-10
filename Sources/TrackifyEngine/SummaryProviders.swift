@@ -77,10 +77,19 @@ public struct CodexSummaryProvider: SummaryProvider, Sendable {
         _ packet: ReportEvidencePacket,
         recipe: ReportRecipeVersion?
     ) async throws -> ProviderGenerationResult {
+        let context = try ProviderInvocationContext.create(purpose: "direct-report")
+        defer { context.cleanup() }
+        return try await generate(packet, recipe: recipe, context: context)
+    }
+
+    public func generate(
+        _ packet: ReportEvidencePacket,
+        recipe: ReportRecipeVersion?,
+        context: ProviderInvocationContext
+    ) async throws -> ProviderGenerationResult {
         guard let executable else { throw SummaryProviderError.executableNotFound("Codex") }
         let input = try ProviderPrompt.make(packet, recipe: recipe)
-        let directory = try temporaryDirectory(prefix: "trackify-codex-report")
-        defer { try? FileManager.default.removeItem(at: directory) }
+        let directory = context.workingDirectory
         let schemaURL = directory.appending(path: "report.schema.json")
         let outputURL = directory.appending(path: "report.json")
         try ProviderPrompt.schema.write(to: schemaURL, options: .atomic)
@@ -97,7 +106,7 @@ public struct CodexSummaryProvider: SummaryProvider, Sendable {
             executable: executable,
             arguments: arguments,
             workingDirectory: directory,
-            environment: internalEnvironment(),
+            environment: internalEnvironment(context: context),
             input: input,
             outputLimit: 2 * 1_024 * 1_024
         )
@@ -143,11 +152,20 @@ public struct ClaudeSummaryProvider: SummaryProvider, Sendable {
         _ packet: ReportEvidencePacket,
         recipe: ReportRecipeVersion?
     ) async throws -> ProviderGenerationResult {
+        let context = try ProviderInvocationContext.create(purpose: "direct-report")
+        defer { context.cleanup() }
+        return try await generate(packet, recipe: recipe, context: context)
+    }
+
+    public func generate(
+        _ packet: ReportEvidencePacket,
+        recipe: ReportRecipeVersion?,
+        context: ProviderInvocationContext
+    ) async throws -> ProviderGenerationResult {
         guard let executable else { throw SummaryProviderError.executableNotFound("Claude") }
         let input = try ProviderPrompt.make(packet, recipe: recipe)
         let schema = String(decoding: ProviderPrompt.schema, as: UTF8.self)
-        let directory = try temporaryDirectory(prefix: "trackify-claude-report")
-        defer { try? FileManager.default.removeItem(at: directory) }
+        let directory = context.workingDirectory
         let arguments = [
             "--print", "--no-session-persistence", "--model", model,
             "--tools", "", "--strict-mcp-config",
@@ -160,7 +178,7 @@ public struct ClaudeSummaryProvider: SummaryProvider, Sendable {
             executable: executable,
             arguments: arguments,
             workingDirectory: directory,
-            environment: internalEnvironment(),
+            environment: internalEnvironment(context: context),
             input: input,
             outputLimit: 2 * 1_024 * 1_024
         )
@@ -223,28 +241,13 @@ public struct ProviderHealthInspector: Sendable {
                 detail: "Install Codex CLI to enable generated summaries."
             )
         }
-        do {
-            let output = try runner.run(
-                executable: executable,
-                arguments: ["login", "status"],
-                workingDirectory: nil,
-                environment: nil,
-                outputLimit: 64 * 1_024
-            )
-            return ProviderHealth(
-                providerID: "codex-cli",
-                state: output.status == 0 ? .ready : .unavailable,
-                executablePath: executable.path,
-                detail: output.status == 0 ? nil : "Codex CLI is installed but not authenticated."
-            )
-        } catch {
-            return ProviderHealth(
-                providerID: "codex-cli",
-                state: .unavailable,
-                executablePath: executable.path,
-                detail: "Codex login status could not be checked."
-            )
-        }
+        _ = runner
+        return ProviderHealth(
+            providerID: "codex-cli", state: .authenticationUnknown,
+            executablePath: executable.path,
+            detail:
+                "Codex is installed. Authentication will be verified by the first enabled Trackify generation or a provider test."
+        )
     }
 
     public func claude(executable: URL?) -> ProviderHealth {
@@ -256,11 +259,16 @@ public struct ProviderHealthInspector: Sendable {
                 detail: "Install Claude Code to enable generated summaries."
             )
         }
+        // Claude has shipped versions where an unsupported `auth status`
+        // command is interpreted as an ordinary prompt and persisted as a
+        // conversation. Passive capability discovery must never launch a
+        // provider. Readiness is promoted only by an explicit durable
+        // invocation outcome in CapabilityDiscovery.generators(store:).
         return ProviderHealth(
-            providerID: "claude-cli",
-            state: .authenticationUnknown,
+            providerID: "claude-cli", state: .authenticationUnknown,
             executablePath: executable.path,
-            detail: "This Claude Code version has no non-interactive authentication-status command; the first report verifies access."
+            detail:
+                "Claude Code is installed. Authentication will be verified by the first enabled Trackify generation or a provider test."
         )
     }
 }
@@ -282,16 +290,26 @@ public struct CapabilityDiscovery: @unchecked Sendable {
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         now: Date = Date()
     ) -> [SourceCapability] {
-        let definitions: [(String, String, String, URL)] = [
-            ("codex-cli-history", "codex", "Codex CLI/Desktop history", homeDirectory.appending(path: ".codex/sessions")),
-            ("codex-archive-history", "codex", "Codex archived history", homeDirectory.appending(path: ".codex/archived_sessions")),
-            ("claude-terminal-history", "claude", "Claude Code terminal history", homeDirectory.appending(path: ".claude/projects")),
+        let definitions: [(String, String, String, URL, Int)] = [
+            (
+                "codex-cli-history", "codex", "Codex CLI/Desktop history", homeDirectory.appending(path: ".codex/sessions"),
+                CodexConversationParser.adapterVersion
+            ),
+            (
+                "codex-archive-history", "codex", "Codex archived history", homeDirectory.appending(path: ".codex/archived_sessions"),
+                CodexConversationParser.adapterVersion
+            ),
+            (
+                "claude-terminal-history", "claude", "Claude Code terminal history", homeDirectory.appending(path: ".claude/projects"),
+                ClaudeConversationParser.adapterVersion
+            ),
             (
                 "claude-desktop-code-history", "claude", "Claude Desktop Code history",
-                homeDirectory.appending(path: "Library/Application Support/Claude/local-agent-mode-sessions")
+                homeDirectory.appending(path: "Library/Application Support/Claude/local-agent-mode-sessions"),
+                ClaudeConversationParser.adapterVersion
             ),
         ]
-        return definitions.map { id, family, surface, location in
+        return definitions.map { id, family, surface, location, adapterVersion in
             let state: CapabilityState
             var detail: String?
             if !fileManager.fileExists(atPath: location.path) {
@@ -305,7 +323,7 @@ public struct CapabilityDiscovery: @unchecked Sendable {
             let statistics = (try? store.sourceStatistics(source: family))
             return SourceCapability(
                 id: id, family: family, surface: surface, location: location.path,
-                adapterVersion: 1, state: state, lastProbeAt: now,
+                adapterVersion: adapterVersion, state: state, lastProbeAt: now,
                 lastSuccessfulImportAt: statistics?.lastObservedAt,
                 importedRecordCount: statistics?.records ?? 0, detail: detail)
         }
@@ -316,7 +334,8 @@ public struct CapabilityDiscovery: @unchecked Sendable {
             "codex", additionalPaths: ["/Applications/ChatGPT.app/Contents/Resources/codex"])
         let claudeURL = ClaudeExecutableLocator.find(
             fileManager: fileManager,
-            homeDirectory: fileManager.homeDirectoryForCurrentUser)
+            homeDirectory: fileManager.homeDirectoryForCurrentUser,
+            runner: runner)
         let discovered = [
             generation(
                 id: .codex, executable: codexURL, model: "gpt-5.6-sol",
@@ -329,8 +348,7 @@ public struct CapabilityDiscovery: @unchecked Sendable {
         ]
         guard let store else { return discovered }
         return discovered.map { capability in
-            guard capability.id == .claude,
-                capability.authentication != .notInstalled,
+            guard capability.authentication != .notInstalled,
                 let verification = try? store.latestProviderAuthentication(capability.id)
             else { return capability }
             return GenerationCapability(
@@ -345,7 +363,10 @@ public struct CapabilityDiscovery: @unchecked Sendable {
                 lastProbeAt: capability.lastProbeAt,
                 detail: verification.state == .ready
                     ? "Readiness was verified by a successful Trackify provider invocation."
-                    : "The latest explicit Trackify invocation reported an authentication failure.")
+                    : [
+                        capability.detail,
+                        "The latest explicit Trackify invocation also reported an authentication failure.",
+                    ].compactMap { $0 }.joined(separator: " "))
         }
     }
 
@@ -359,11 +380,32 @@ public struct CapabilityDiscovery: @unchecked Sendable {
         case .codex: return .codex
         case .claude: return .claude
         case .automatic:
-            // Codex is the stable deterministic priority when both are ready.
-            return [.codex, .claude].first { id in
-                values.first(where: { $0.id == id })?.authentication == .ready
+            // Prefer proven readiness, then let the first enabled generation
+            // verify an installed provider whose authentication is still unknown.
+            for state in [AuthenticationState.ready, .unknown] {
+                if let provider = [SummaryProviderID.codex, .claude].first(where: { id in
+                    values.first(where: { $0.id == id })?.authentication == state
+                }) {
+                    return provider
+                }
             }
+            return nil
         }
+    }
+
+    /// Returns a provider that may be invoked without a separate setup probe.
+    /// Unknown authentication is intentionally eligible: the generation itself
+    /// is the durable readiness check. Known failures and missing executables are
+    /// not retried on every scheduled refresh.
+    public func automaticInvocationProvider(
+        mode: ProviderSelectionMode,
+        capabilities: [GenerationCapability]
+    ) -> SummaryProviderID? {
+        guard let provider = effectiveProvider(mode: mode, capabilities: capabilities),
+            let authentication = capabilities.first(where: { $0.id == provider })?.authentication,
+            authentication == .ready || authentication == .unknown
+        else { return nil }
+        return provider
     }
 
     private func generation(
@@ -375,19 +417,8 @@ public struct CapabilityDiscovery: @unchecked Sendable {
         health: ProviderHealth,
         now: Date
     ) -> GenerationCapability {
-        let version: String?
-        if let executable,
-            let result = try? runner.run(
-                executable: executable, arguments: ["--version"], workingDirectory: nil,
-                environment: nil, outputLimit: 16 * 1_024),
-            result.status == 0
-        {
-            version = result.utf8.trimmingCharacters(in: .whitespacesAndNewlines).prefix(160).description
-        } else {
-            version = nil
-        }
         return GenerationCapability(
-            id: id, executablePath: executable?.path, cliVersion: version,
+            id: id, executablePath: executable?.path, cliVersion: nil,
             authentication: authentication(health.state), structuredOutput: executable != nil,
             usageReporting: executable != nil && supportsUsage, hardMonetaryCap: false,
             requestedModel: model, effectiveModelKnown: false,
@@ -422,27 +453,43 @@ public enum ExecutableLocator {
 }
 
 public enum ClaudeExecutableLocator {
-    public static func find(
+    public static func candidates(
         fileManager: FileManager = .default,
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
         environment: [String: String] = ProcessInfo.processInfo.environment
-    ) -> URL? {
+    ) -> [URL] {
+        let pathCandidates = (environment["PATH"] ?? "")
+            .split(separator: ":")
+            .map { URL(filePath: String($0)).appending(path: "claude") }
+        let localCandidate = homeDirectory.appending(path: ".local/bin/claude")
         let versionsRoot = homeDirectory.appending(path: "Library/Application Support/Claude/claude-code")
         let desktopCandidates =
             ((try? fileManager.contentsOfDirectory(
-                at: versionsRoot,
-                includingPropertiesForKeys: [.isDirectoryKey],
+                at: versionsRoot, includingPropertiesForKeys: [.isDirectoryKey],
                 options: [.skipsHiddenFiles])) ?? [])
             .sorted {
-                $0.lastPathComponent.compare(
-                    $1.lastPathComponent, options: .numeric) == .orderedDescending
+                $0.lastPathComponent.compare($1.lastPathComponent, options: .numeric) == .orderedDescending
             }
-            .map { $0.appending(path: "claude.app/Contents/MacOS/claude").path }
-        let localCandidate = homeDirectory.appending(path: ".local/bin/claude").path
-        return ExecutableLocator.find(
-            "claude",
-            additionalPaths: desktopCandidates + [localCandidate],
-            environment: environment)
+            .map { $0.appending(path: "claude.app/Contents/MacOS/claude") }
+        var seen: Set<String> = []
+        return ([localCandidate] + pathCandidates + desktopCandidates).filter {
+            fileManager.isExecutableFile(atPath: $0.path) && seen.insert($0.standardizedFileURL.path).inserted
+        }
+    }
+
+    public static func find(
+        fileManager: FileManager = .default,
+        homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser,
+        environment: [String: String] = ProcessInfo.processInfo.environment,
+        runner: any CommandRunning = ProcessRunner(timeout: 5)
+    ) -> URL? {
+        // Keep the runner parameter for source compatibility with callers that
+        // injected one before discovery became pure. It is deliberately never
+        // invoked.
+        _ = runner
+        return candidates(
+            fileManager: fileManager, homeDirectory: homeDirectory, environment: environment
+        ).first
     }
 }
 
@@ -479,7 +526,7 @@ private enum ProviderPrompt {
     static let maximumBytes = 256 * 1_024
 
     static let schema = Data(
-        #"{"type":"object","additionalProperties":false,"properties":{"summary":{"type":"string","minLength":1,"maxLength":2000},"topics":{"type":"array","maxItems":6,"items":{"type":"string","maxLength":120}},"evidenceAliases":{"type":"array","items":{"type":"string"}}},"required":["summary","topics","evidenceAliases"]}"#
+        #"{"type":"object","additionalProperties":false,"properties":{"summary":{"type":"string","minLength":1,"maxLength":5000},"compactSummary":{"type":"string","minLength":1,"maxLength":500},"topics":{"type":"array","maxItems":12,"items":{"type":"string","maxLength":160}},"evidenceAliases":{"type":"array","items":{"type":"string"}},"projects":{"type":"array","maxItems":16,"items":{"type":"string","maxLength":160}},"projectSummaries":{"type":"array","maxItems":16,"items":{"type":"object","additionalProperties":false,"properties":{"project":{"type":"string","maxLength":160},"narrative":{"type":"string","maxLength":1600},"intents":{"type":"array","maxItems":12,"items":{"type":"string","maxLength":500}},"outcomes":{"type":"array","maxItems":12,"items":{"type":"string","maxLength":500}},"openWork":{"type":"array","maxItems":12,"items":{"type":"string","maxLength":500}},"blockers":{"type":"array","maxItems":8,"items":{"type":"string","maxLength":500}}},"required":["project","narrative","intents","outcomes","openWork","blockers"]}},"intents":{"type":"array","maxItems":16,"items":{"type":"string","maxLength":500}},"outcomes":{"type":"array","maxItems":16,"items":{"type":"string","maxLength":500}},"openWork":{"type":"array","maxItems":16,"items":{"type":"string","maxLength":500}},"blockers":{"type":"array","maxItems":12,"items":{"type":"string","maxLength":500}}},"required":["summary","compactSummary","topics","evidenceAliases","projects","projectSummaries","intents","outcomes","openWork","blockers"]}"#
             .utf8)
 
     static func make(_ packet: ReportEvidencePacket, recipe: ReportRecipeVersion? = nil) throws -> Data {
@@ -492,16 +539,20 @@ private enum ProviderPrompt {
         }
         var input = Data(
             """
-            You write a concise factual development-work report from only the Trackify evidence below.
+            You write a concise factual development-work summary or requested report from only the Trackify evidence below.
             Do not use tools, inspect files, or infer completion not supported by evidence.
             Preserve the supplied period state. Mention unfinished or waiting work plainly.
             Treat user messages as the clearest evidence of requested goals, questions, and decisions.
             Treat assistant messages as progress claims or implementation context, not proof of completion.
             Pair intent and outcomes only when their session or repository association supports that relationship.
             Pair the requested intent with concrete commits, tests, changes, and the final observed state.
-            Evidence identifiers are short packet-local aliases. Cite only aliases supplied in events or priorReports.
-            Prior reports summarize earlier closed hours and should be used to cover a complete daily period.
-            Return only the requested JSON object. Keep summary under 80 words and topics under 6 items.
+            Evidence identifiers are short packet-local aliases. Cite only aliases supplied in events or priorSummaries.
+            Prior summaries compress earlier complete periods and are interpretations, not stronger proof than direct evidence.
+            Return only the requested JSON object. The full summary may be detailed enough to preserve every important
+            work thread. Write compactSummary separately as at most two dense sentences for a menu-bar dropdown.
+            Group multi-project work in projectSummaries, name each project explicitly, and include one section for every
+            project named by the packet even when its only evidence is an unfinished request. Populate intents, outcomes,
+            openWork, and blockers conservatively; use empty arrays when the evidence does not support a field.
 
             RECIPE_POLICY
             \(recipePolicy(recipe))
@@ -542,20 +593,51 @@ private enum ProviderPrompt {
             throw SummaryProviderError.invalidResponse(provider)
         }
         let summary = response.summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        let compact = response.compactSummary.trimmingCharacters(in: .whitespacesAndNewlines)
         let aliases = response.evidenceAliases
         let allowed = packet.evidenceAliases
         guard
             !summary.isEmpty,
-            summary.count <= 2_000,
-            response.topics.count <= 6,
-            response.topics.allSatisfy({ $0.count <= 120 }),
+            summary.count <= 5_000,
+            !compact.isEmpty,
+            compact.count <= 500,
+            response.topics.count <= 12,
+            response.topics.allSatisfy({ $0.count <= 160 }),
+            response.projects.count <= 16,
+            response.projects.allSatisfy({ !$0.isEmpty && $0.count <= 160 }),
+            response.projectSummaries.count <= 16,
+            response.projectSummaries.allSatisfy(validProjectSummary),
+            validList(response.intents, maximumCount: 16),
+            validList(response.outcomes, maximumCount: 16),
+            validList(response.openWork, maximumCount: 16),
+            validList(response.blockers, maximumCount: 12),
             Set(aliases).count == aliases.count,
             aliases.allSatisfy(allowed.contains),
             allowed.isEmpty || !aliases.isEmpty
         else {
             throw SummaryProviderError.invalidResponse(provider)
         }
-        return ProviderSummary(summary: summary, topics: response.topics, evidenceAliases: aliases)
+        return ProviderSummary(
+            summary: summary, compactSummary: compact,
+            topics: response.topics, evidenceAliases: aliases,
+            projects: response.projects, projectSummaries: response.projectSummaries,
+            intents: response.intents,
+            outcomes: response.outcomes, openWork: response.openWork,
+            blockers: response.blockers)
+    }
+
+    private static func validProjectSummary(_ section: SummaryProjectSection) -> Bool {
+        !section.project.isEmpty && section.project.count <= 160
+            && !section.narrative.isEmpty && section.narrative.count <= 1_600
+            && validList(section.intents, maximumCount: 12)
+            && validList(section.outcomes, maximumCount: 12)
+            && validList(section.openWork, maximumCount: 12)
+            && validList(section.blockers, maximumCount: 8)
+    }
+
+    private static func validList(_ values: [String], maximumCount: Int) -> Bool {
+        values.count <= maximumCount
+            && values.allSatisfy { !$0.isEmpty && $0.count <= 500 }
     }
 
     private static func findStructuredObject(in value: Any) -> [String: Any]? {
@@ -578,8 +660,36 @@ private enum ProviderPrompt {
 
     private struct StructuredResponse: Decodable {
         let summary: String
+        let compactSummary: String
         let topics: [String]
         let evidenceAliases: [String]
+        let projects: [String]
+        let projectSummaries: [SummaryProjectSection]
+        let intents: [String]
+        let outcomes: [String]
+        let openWork: [String]
+        let blockers: [String]
+
+        private enum CodingKeys: String, CodingKey {
+            case summary, compactSummary, topics, evidenceAliases, projects, projectSummaries
+            case intents, outcomes, openWork, blockers
+        }
+
+        init(from decoder: Decoder) throws {
+            let values = try decoder.container(keyedBy: CodingKeys.self)
+            summary = try values.decode(String.self, forKey: .summary)
+            compactSummary = try values.decodeIfPresent(String.self, forKey: .compactSummary) ?? summary
+            topics = try values.decodeIfPresent([String].self, forKey: .topics) ?? []
+            evidenceAliases = try values.decodeIfPresent([String].self, forKey: .evidenceAliases) ?? []
+            projects = try values.decodeIfPresent([String].self, forKey: .projects) ?? []
+            projectSummaries =
+                try values.decodeIfPresent(
+                    [SummaryProjectSection].self, forKey: .projectSummaries) ?? []
+            intents = try values.decodeIfPresent([String].self, forKey: .intents) ?? []
+            outcomes = try values.decodeIfPresent([String].self, forKey: .outcomes) ?? []
+            openWork = try values.decodeIfPresent([String].self, forKey: .openWork) ?? []
+            blockers = try values.decodeIfPresent([String].self, forKey: .blockers) ?? []
+        }
     }
 }
 
@@ -687,19 +797,9 @@ enum ProviderUsageParser {
     }
 }
 
-private func internalEnvironment() -> [String: String] {
+private func internalEnvironment(context: ProviderInvocationContext) -> [String: String] {
     var environment = ProcessInfo.processInfo.environment
     environment["TRACKIFY_INTERNAL_RUN"] = "1"
+    for (key, value) in context.environment { environment[key] = value }
     return environment
-}
-
-private func temporaryDirectory(prefix: String) throws -> URL {
-    let directory = FileManager.default.temporaryDirectory
-        .appending(path: "\(prefix)-\(UUID().uuidString)", directoryHint: .isDirectory)
-    try FileManager.default.createDirectory(
-        at: directory,
-        withIntermediateDirectories: true,
-        attributes: [.posixPermissions: 0o700]
-    )
-    return directory
 }

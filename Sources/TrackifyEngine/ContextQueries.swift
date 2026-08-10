@@ -110,26 +110,29 @@ public struct ContextQueries: Sendable {
             from: since,
             through: cutoff
         )
-        let periodEvents = events.filter { $0.occurredAt < cutoff && CoreEvidence.includes($0) }
-        let activeHours = Set(
-            periodEvents.compactMap { Calendar.current.dateInterval(of: .hour, for: $0.occurredAt)?.start }
-        ).count
-        let llmTurns = periodEvents.count {
-            $0.kind == .agentMessageObserved && $0.payload["role"] == MessageRole.user.rawValue
-        }
+        let periodEvents = try CanonicalWorkEvidenceService().events(
+            store: store,
+            events: events.filter { $0.occurredAt < cutoff && CoreEvidence.includes($0) })
+        let activity = try ActivityQueries().snapshot(
+            store: store, range: DateInterval(start: since, end: cutoff),
+            cutoff: cutoff, repositoryIDs: Set([repository.id]))
         let commits = try store.commits(repositoryID: repository.id, since: since, limit: 50)
-        let messages = try store.messages(repositoryID: repository.id, since: since, limit: 50)
+            .filter { $0.authorTime < cutoff }
+        let messages = CanonicalWorkEvidenceService().messages(
+            try store.messages(repositoryID: repository.id, since: since, limit: 200)
+                .filter { ($0.occurredAt ?? .distantPast) < cutoff }
+        )
         let latestTree = periodEvents.last { $0.kind == .gitWorkingTreeChanged }
         let rendered = render(
             repository: repository,
             copies: copies,
             since: since,
             cutoff: cutoff,
-            activeHours: activeHours,
-            llmTurns: llmTurns,
-            evidenceCount: periodEvents.count,
-            firstEvidenceAt: periodEvents.first?.occurredAt,
-            lastEvidenceAt: periodEvents.last?.occurredAt,
+            activeHours: activity.activeHours,
+            llmTurns: activity.llmTurns,
+            evidenceCount: activity.evidenceCount,
+            firstEvidenceAt: activity.firstEvidenceAt,
+            lastEvidenceAt: activity.lastEvidenceAt,
             commits: commits,
             messages: messages,
             latestTree: latestTree,
@@ -140,11 +143,11 @@ public struct ContextQueries: Sendable {
             workingCopies: copies,
             rangeStart: since,
             rangeEnd: cutoff,
-            activeHours: activeHours,
-            llmTurns: llmTurns,
-            evidenceCount: periodEvents.count,
-            firstEvidenceAt: periodEvents.first?.occurredAt,
-            lastEvidenceAt: periodEvents.last?.occurredAt,
+            activeHours: activity.activeHours,
+            llmTurns: activity.llmTurns,
+            evidenceCount: activity.evidenceCount,
+            firstEvidenceAt: activity.firstEvidenceAt,
+            lastEvidenceAt: activity.lastEvidenceAt,
             commits: commits,
             messages: messages,
             latestWorkingTreeEvent: latestTree,

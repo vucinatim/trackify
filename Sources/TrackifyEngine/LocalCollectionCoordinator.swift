@@ -39,6 +39,22 @@ public struct LocalCollectionResult: Codable, Equatable, Sendable {
         self.issues = issues
         self.counts = counts
     }
+
+    public var sourceReads: [EvidenceSourceReadAudit] {
+        Dictionary(grouping: summaries, by: \.sourceKey).map { sourceKey, values in
+            let opened = Set(values.flatMap(\.readMetrics.openedUnitFingerprints))
+            let knownBytes = values.compactMap(\.readMetrics.bytesRead)
+            return EvidenceSourceReadAudit(
+                sourceKey: sourceKey,
+                unit: values.first(where: { $0.readMetrics.unit != .unknown })?.readMetrics.unit
+                    ?? .unknown,
+                candidatesConsidered: values.map(\.readMetrics.candidatesConsidered).max() ?? 0,
+                unitsOpened: opened.count,
+                bytesRead: knownBytes.count == values.count ? knownBytes.reduce(0, +) : nil,
+                recordsObserved: values.reduce(0) { $0 + $1.readMetrics.recordsObserved },
+                recordsAccepted: values.reduce(0) { $0 + $1.readMetrics.recordsAccepted })
+        }.sorted { $0.sourceKey < $1.sourceKey }
+    }
 }
 
 public enum LocalCollectionError: Error, Equatable, LocalizedError {
@@ -156,6 +172,7 @@ public struct LocalCollectionCoordinator: Sendable {
             observedAt: clock.now(),
             state: issues.isEmpty ? "healthy" : "degraded"
         )
+        _ = try store.refreshEvidenceQualityAudit(at: clock.now())
         return try LocalCollectionResult(summaries: summaries, issues: issues, counts: store.counts())
     }
 
@@ -201,7 +218,7 @@ public struct LocalCollectionCoordinator: Sendable {
         return kill(processID, 0) == -1 && errno == ESRCH
     }
 
-    private static func backfillCursorScope(_ range: DateInterval) -> String {
+    static func backfillCursorScope(_ range: DateInterval) -> String {
         "backfill-\(Int64(range.start.timeIntervalSince1970))-\(Int64(range.end.timeIntervalSince1970))"
     }
 

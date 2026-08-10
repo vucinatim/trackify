@@ -7,12 +7,12 @@ The application icon and menu-bar template are defined in [BRAND.md](./BRAND.md)
 
 ## 1. Purpose
 
-Trackify is a passive observer. Its UI makes the local work ledger understandable at a glance and explorable when needed; it is not a workspace for manually maintaining tasks, timers, or reports.
+Trackify is a passive observer. Its UI makes the local work ledger understandable at a glance and explorable when needed. Reports are the one deliberate creation workflow; Trackify is not a workspace for manually maintaining tasks or timers.
 
 The native SwiftUI application has two surfaces:
 
 1. A compact menu-bar panel for the current day.
-2. A history-first main window with Overview, Activity, and Projects.
+2. A history-first main window with Overview, Activity, Projects, Reports, and Settings.
 
 ## 2. UI principles
 
@@ -58,37 +58,40 @@ The header uses a non-animated status capsule: Up to date, Syncing, Paused, or N
 
 ## 4. Main application shell
 
-The native `NavigationSplitView` has three stable destinations:
+The native `NavigationSplitView` has five stable destinations:
 
 ```text
 WORK LEDGER
   Overview
   Activity
   Projects
+  Reports
+  Settings
 ```
 
-Settings remains a separate native scene. The app defaults to 1180×800 and uses a 1040×700 minimum so list/detail views do not collapse into unusable layouts.
+Settings is routed inside this main window. Command-Comma and the menu-bar gear open the same window, select Settings, and bring it in front. The app defaults to 1180×800 and uses a 1040×700 minimum so list/detail views do not collapse into unusable layouts.
 
 The main window has no global refresh control: collection is automatic, and the explicit Sync now fallback remains in the menu-bar overflow and diagnostics surfaces.
 
-Calendar selection, reports, and search remain first-class capabilities without becoming duplicate destinations. Date browsing lives in Overview; reports and search live in Activity.
+Calendar selection, reports, and search remain first-class capabilities without duplicating one another. Date browsing lives in Overview, chronological evidence and search live in Activity, and report creation/history lives in Reports.
 
 ## 5. Overview
 
 Overview is the glanceable historical dashboard. It provides:
 
 - Today, 7-day, and 30-day range selection.
-- Evidence hours, LLM turns, commits, and committed-line totals.
+- Selectable evidence-hours, LLM-turn, commit, and committed-line cards. Selecting a card changes the trend without changing the date or range.
 - Per-active-day context rather than a synthetic productivity score.
-- An adaptive trend chart: Day shows 24 hourly evidence-record bars, while 7-day and 30-day ranges show daily evidence hours.
-- Native pointer hover on every trend point, showing its period, evidence or evidence hours, LLM turns, commits, committed lines, and repository count.
+- A single honest bar-chart grammar at every range. Day, 7-day, and 30-day views retain the underlying hourly buckets instead of replacing longer ranges with daily aggregates. The Evidence hours card drills into evidence-item density by hour; plotting binary hour occupancy would turn adjacent active buckets into a misleading solid wall.
+- Explicit hour/day grid hierarchy and end-to-end date domains, so the first and last buckets are not clipped and longer ranges remain readable without discarding resolution.
+- Native pointer hover centered on each hourly bar, showing its exact period, the selected metric, evidence hours, LLM turns, commits, committed lines, files, and repository count. The tooltip is clamped inside the chart panel so neighboring content cannot cover it.
 - A compact clickable six-week evidence heatmap that preserves quiet days and immediately reveals date, evidence hours, turns, and commits on hover without changing layout height. Today uses a pink marker; the selected date uses a pale-blue outline.
 - Recent stored reports with state badges and copy actions.
 - Project focus measured as active days in the selected range.
 
-The selected date is always visible in the header. Today receives an explicit label and marker; selecting a heatmap cell opens that day, and a compact label-free graphical date-picker popover plus previous/next controls support direct historical navigation.
+The selected date is always visible in the header. Today receives an explicit label and marker; selecting a heatmap cell opens that day, and a compact label-free graphical date-picker popover plus previous/next controls support direct historical navigation. The Today action occupies a fixed position to the left of the date and navigation controls, including while already viewing Today, so controls never shift under the pointer.
 
-All totals and trend points use shared `ActivityQueries` snapshots. Historical Day selection loads the selected date's 24 hourly snapshots on demand; it never approximates an hourly shape from a daily total. Report copy and project focus are supplemental views over the same ledger, not alternate tracking systems.
+All totals and trend points use shared `ActivityQueries` snapshots. Every range loads its calendar-hour snapshots on demand; it never approximates an hourly shape from a daily total. The query engine partitions ordered non-overlapping ranges in one pass, keeping 168- and 720-hour views bounded without persisting a second rollup truth. Report copy and project focus are supplemental views over the same ledger, not alternate tracking systems.
 
 ## 6. Activity
 
@@ -108,7 +111,7 @@ The All, Reports, Commits, Conversations, and Changes filters are local view fil
 
 ### Reports in Activity
 
-Reports appear as visually distinct cards in chronological context, rather than duplicating the same history in a separate browser. Each card provides:
+Reports appear as visually distinct cards in chronological context. Reports has a separate creation/library workspace rather than duplicating the Activity feed. Each Activity card provides:
 
 - Report date and exact hourly or daily period.
 - Completed, in-progress, investigating, waiting, observed, or no-activity state.
@@ -117,7 +120,13 @@ Reports appear as visually distinct cards in chronological context, rather than 
 
 Report generation treats a user message as intent, an assistant message as a progress claim or implementation context, and commits, tests, working-tree changes, and final period state as concrete outcome evidence. A report pairs requests and outcomes only when their session or repository association supports the relationship, so parallel projects cannot be blended into a fabricated narrative. Unfinished or investigating evidence takes precedence over unrelated completed commits, and an assistant completion claim is never sufficient proof by itself.
 
-Reports are read-only in V1. Regeneration and evidence inspection remain stable CLI operations.
+The Reports workspace has three explicit sections instead of mixing configuration with history:
+
+- **History** shows generated artifacts in a list/detail browser. `Latest` hides legacy internal-envelope artifacts and superseded revisions without deleting them; `All` keeps the complete audit trail. Reports can be copied or regenerated from their exact saved configuration.
+- **Templates** defines what a report should say. Built-ins are immutable and visible, custom templates use plain presets for style, length, audience, and format, and archived templates remain recoverable. A selected template prefills the editable instructions in the New Report composer.
+- **Scheduled** defines when a report runs. Each reporter has its own template, hourly/daily cadence, project scope, provider override, enabled state, and latest-run status. Reporters can be added, viewed, paused, edited, or removed without changing templates or prior artifacts.
+
+New Report is a focused sheet with template, instructions, period, and project first; provider selection stays under Advanced. It previews bounded evidence and estimated input tokens before generation. Exact run-specific instructions remain attached to the immutable generated report.
 
 ### Search in Activity
 
@@ -153,6 +162,8 @@ The app itself remains passive. Signed direct installations use Sparkle’s stan
 - Overview
 - Activity
 - Projects
+- Reports History, Templates, and Scheduled views
+- New Report and New Template sheets
 - Activity in a tall window
 - Empty Overview
 - Empty Activity
@@ -168,10 +179,32 @@ The harness also rejects missing windows and screenshots below the minimum expec
 3. Unfinished and quiet periods remain explicit.
 4. Overview compares simple totals across today, 7 days, and 30 days without a synthetic score.
 5. Activity keeps reports and concrete evidence distinguishable but contextual.
-6. Reports support practical history browsing, filtering, detail, and copy without duplicating Activity.
+6. Reports cleanly separate artifact history, reusable templates, and scheduled reporters while preserving preview, manual generation, provenance, regeneration, and copy.
 7. More than 60 repositories do not produce an unusable sidebar.
 8. Repositories are grouped by discovery root and expose their associated recent evidence.
 9. Overview makes today and the selected historical day obvious while keeping calendar navigation compact.
 10. Activity search has a centered native empty state and searches every documented ledger record kind.
 11. Normal operation requires no manual timer, task, or report maintenance.
-12. The deterministic visual harness captures all three primary screens plus tall-window and empty-state variants.
+12. The deterministic visual harness captures all primary screens plus tall-window, empty-state, and Settings variants.
+
+## 11. Goal 3 summary surfaces
+
+The word **Summary** now means Trackify's automatic interpretation of evidence;
+**Report** means a user-configured output. This overrides the V1 “Reports in
+Activity” wording above.
+
+- The menu-bar dropdown shows `Current work`, summary state, the dedicated
+  compact narrative, up to four project names, provider/local provenance, and
+  relative generation time. It never truncates the full narrative to make this
+  copy and never displays a Clockify or stand-up artifact there.
+- Overview Day shows the newest day summary. Broader ranges show the newest
+  immutable day revision per calendar day. Expanded cards render project names
+  as headings with project narrative and open work beneath them.
+- Activity renders summary checkpoints next to commits, user prompts, agent
+  responses, working-tree changes, and tests. Superseded summary revisions stay
+  addressable but do not duplicate the normal feed.
+- Reports retains History, Templates, Scheduled reporters, manual generation,
+  copy, and provenance. These outputs consume summaries but do not become
+  Overview summaries.
+- Settings' AI toggle controls only automatic summary generation. A report's
+  saved provider policy remains authoritative when the user manually runs it.

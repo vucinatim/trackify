@@ -1,15 +1,14 @@
 # Trackify Goal 2: Configurable Work Intelligence
 
-Status: Source implementation complete; signed-release validation pending
+Status: Product implementation complete; release work is a separate milestone
 Last updated: 2026-08-06
 
-Implementation status: Milestones 1 through 5 are implemented. The deterministic
-compiler, capability discovery, passive Preferences, persisted report queue,
-usage and budget ledger, versioned recipes, immutable artifacts, privacy
-profiles, local destinations, migrations, simulation, and CLI parity are in
-place. The source acceptance result and the remaining credential/soak gates are
-recorded in [GOAL_2_ACCEPTANCE_AUDIT.md](./GOAL_2_ACCEPTANCE_AUDIT.md); measured
-results are recorded in [VALIDATION.md](./VALIDATION.md).
+Implementation status: the deterministic compiler, capability discovery,
+in-window Settings, configurable report workspace, persisted report queue,
+usage and budget ledger, immutable template versions, run-specific instructions,
+immutable report artifacts, privacy profiles, local destinations, migrations,
+simulation, and CLI parity are implemented. Packaging/signing is deliberately
+tracked as later release work rather than as unfinished Goal 2 product scope.
 
 Goal 2 is the next product milestone after the V1 evidence ledger. It is an
 incremental extension of V1, not a rewrite and not a commitment to a remote
@@ -53,7 +52,10 @@ history, and deterministic reports are never secondary modes.
 
 - Smart, deterministic evidence compilation.
 - Capability-based Codex and Claude discovery.
-- A passive Sources, Summaries, Usage, and Recipes preferences experience.
+- A passive Sources, AI Providers, Usage, and General settings experience.
+- A dedicated Reports workspace with separate History, Templates, and Scheduled
+  reporters, plus one-off instructions, preview, manual generation, provenance,
+  regeneration, and copy.
 - Explicit provider selection, automatic selection, and local-only operation.
 - A report-run queue separated from collection.
 - Per-run usage and cost provenance.
@@ -176,18 +178,23 @@ only documented executable/version/status commands and learns the result of a
 real generation call only after the user has enabled model reports or requested
 a provider test.
 
-### Preferences
+### Settings
 
-Preferences should contain four Goal 2 sections:
+Settings live inside the main Trackify window and contain four sections:
 
 1. **Sources** — detected history surfaces, location, compatibility state,
    imported record count, last successful sync, permissions, and rescan.
-2. **Summaries** — Automatic, Codex, Claude, or Local only; effective provider;
+2. **AI Providers** — Automatic, Codex, Claude, or Local only; effective provider;
    model profile; cadence; budgets; and a bounded test preview.
 3. **Usage** — calls, tokens, duration, failures, cost interpretation, and budget
    progress by day and month.
-4. **Recipes** — built-in and custom report recipes, scope, privacy profile,
-   output shape, and preview.
+4. **General** — collection, launch-at-login, reconciliation, and updates.
+
+Templates and scheduled reporters are configured where they are used: the
+Reports workspace. Templates define only what to write; reporters independently
+define when to run, project scope, provider override, and enabled state.
+Built-ins are immutable and can be duplicated; custom templates can be edited,
+archived, or restored. Every edit creates an immutable version.
 
 Most users should never need to open these views. Their job is visibility and
 control, not required setup ceremony.
@@ -198,13 +205,15 @@ deduplicated Codex or Claude ledger family. Trackify does not pretend those
 overlapping records can be attributed to one cache surface after deduplication;
 surface availability and permissions are still probed independently.
 
-### Report history
+### Reports workspace
 
-The existing Activity timeline remains the chronological work view. Reports and
-other generated outputs are artifacts attached to periods and evidence. They can
-be inspected from the relevant day, project, or timeline entry and filtered in
-an artifact history when necessary. Goal 2 must not restore a redundant top-level
-Reports tab that duplicates the Activity timeline.
+The Activity timeline remains the chronological work view. Reports is a separate
+creation and library workspace, not another activity feed. History, Templates,
+and Scheduled are separate sections. A focused New Report composer starts from
+a template's visible instructions, keeps provider choice under Advanced, and
+shows a bounded evidence-and-token preview. A generation stores its effective
+configuration, so later template edits never change the meaning of an existing
+report and repeated generations for the same period remain separate revisions.
 
 ## 6. Architecture
 
@@ -214,7 +223,8 @@ The Goal 2 pipeline is:
 local sources
     -> durable evidence ledger
     -> deterministic evidence compiler
-    -> versioned report recipe
+    -> versioned report template
+    -> optional scheduled reporter
     -> bounded report-run queue
     -> local renderer or selected model provider
     -> validated immutable artifact
@@ -360,8 +370,8 @@ macOS Keychain; only a non-secret reference belongs in settings or SQLite.
 
 ### 6.2 Storage and compatibility
 
-Goal 2 adds versioned GRDB migrations for recipes, recipe versions, report runs,
-artifacts, artifact evidence, destinations, and delivery attempts. Migrations
+Goal 2 adds versioned GRDB migrations for recipes, recipe versions, scheduled
+reporters, report runs, artifacts, artifact evidence, destinations, and delivery attempts. Migrations
 must preserve the V1 evidence tables and stable identifiers.
 
 Existing V1 reports are migrated into legacy report artifacts locally:
@@ -574,9 +584,10 @@ Examples of honest labels:
 - "Included with provider subscription; incremental cost unknown"
 - "Billing managed by your organization"
 
-Trackify never claims to be the authoritative provider billing dashboard and
-never estimates the user's total Codex or Claude account usage. It reports only
-calls Trackify initiated.
+Trackify never claims to be the authoritative provider billing dashboard. It
+reports calls Trackify initiated and may display the provider's read-only
+aggregate allowance snapshot when the local CLI exposes one. Aggregate account
+usage is clearly separated from Trackify-attributed usage.
 
 Rate-card estimates require a versioned local rate card with model, effective
 date, currency, and source. If the effective model or billing context is unknown,
@@ -584,21 +595,24 @@ Trackify does not fabricate a dollar total.
 
 ### 10.3 Budget enforcement
 
-Budgets are evaluated in this order:
+Budgets are evaluated by one shared summary/report policy in this order:
 
 1. Compile the local packet.
-2. Check active-period eligibility and recipe cadence.
-3. Check calls-per-day.
-4. Check estimated input-token allowance.
-5. Check daily token allowance.
-6. Check optional monetary allowance only when its cost semantics are usable.
-7. Apply the provider's runtime hard cap when supported.
-8. Record actual usage after completion.
+2. Check active-period eligibility and scheduled-reporter cadence.
+3. Read the provider's live weekly allowance when supported.
+4. Check Trackify-attributed weekly allowance percentage.
+5. Check the provider-rate-card weekly credit safeguard.
+6. Check calls-per-day and per-call bytes/tokens.
+7. Check daily/monthly token safety ceilings.
+8. Check optional monetary allowance only when its cost semantics are usable.
+9. Record actual usage and before/after allowance snapshots after completion.
 
 Initial controls:
 
 - maximum serialized input and estimated input tokens per call;
 - maximum generation calls per day;
+- a default three-percentage-point weekly Trackify allowance target;
+- a default 500-credit weekly provider-rate-card safeguard;
 - daily Trackify token ceiling;
 - optional monthly token ceiling;
 - optional daily/monthly monetary ceiling where meaningful;
@@ -610,13 +624,20 @@ Initial controls:
 When a budget is exhausted, the job becomes a deterministic artifact and the UI
 shows `LLM budget paused`. Collection and future eligible periods continue.
 
+The initial 20 KiB / 24k-token / 8-call / 50k-token daily policy was a synthetic
+provider-test constraint, not a viable product budget. Settings without a budget
+schema version migrate once to the v2 policy: 256 KiB and 100k estimated input
+tokens per call, 30 calls and one million tokens per day, and twenty million
+tokens per month. These remain emergency ceilings; weekly allowance and credits
+are the primary controls.
+
 ## 11. Scheduling and concurrency
 
 Goal 2 introduces an explicit report-run queue owned by the engine:
 
 - collection commits evidence and releases its lease first;
-- report jobs refer to closed periods and recipe versions;
-- the queue deduplicates by period, recipe version, and generation intent;
+- scheduled report jobs refer to closed periods, reporter identity, and recipe versions;
+- the queue deduplicates by period and reporter identity, including pending work;
 - current-hour previews remain deterministic;
 - historical evidence backfill never implies historical model backfill;
 - model backfill requires a plan preview and explicit confirmation;
@@ -676,6 +697,14 @@ trackify recipes list --json
 trackify recipes show <recipe-id> --json
 trackify recipes create --from <file>
 trackify recipes preview <recipe-id> --period <period>
+
+trackify reporters list --json
+trackify reporters show <reporter-id> --json
+trackify reporters create --name <name> --template <recipe-id> --cadence daily
+trackify reporters update <reporter-id> --repository <repository-id>
+trackify reporters enable <reporter-id>
+trackify reporters disable <reporter-id>
+trackify reporters delete <reporter-id> --confirm
 
 trackify artifacts list --since 7d --json
 trackify artifacts show <artifact-id> --json

@@ -66,13 +66,15 @@ struct CollectionEngineTests {
     @Test("Provider readiness is honest about authentication certainty")
     func providerHealth() {
         let executable = URL(filePath: "/usr/bin/true")
-        let ready = ProviderHealthInspector(runner: StubCommandRunner(status: 0)).codex(executable: executable)
-        let loggedOut = ProviderHealthInspector(runner: StubCommandRunner(status: 1)).codex(executable: executable)
-        let claude = ProviderHealthInspector(runner: StubCommandRunner(status: 0)).claude(executable: executable)
+        let codexRunner = InvocationCountingRunner()
+        let codex = ProviderHealthInspector(runner: codexRunner).codex(executable: executable)
+        let passiveRunner = InvocationCountingRunner()
+        let claude = ProviderHealthInspector(runner: passiveRunner).claude(executable: executable)
 
-        #expect(ready.state == .ready)
-        #expect(loggedOut.state == .unavailable)
+        #expect(codex.state == .authenticationUnknown)
+        #expect(codexRunner.invocationCount == 0)
         #expect(claude.state == .authenticationUnknown)
+        #expect(passiveRunner.invocationCount == 0)
         #expect(ProviderHealthInspector().claude(executable: nil).state == .notInstalled)
     }
 
@@ -631,7 +633,7 @@ struct CollectionEngineTests {
             #expect(digest.messageExcerpt?.contains("repository discovery") == true)
             #expect(digest.messageExcerpt?.contains(root.path) == false)
             #expect(digest.messageExcerpt?.contains("privateperson") == false)
-            #expect(digest.messageExcerpt?.contains("[REPOSITORY_PATH]") == true)
+            #expect(digest.messageExcerpt?.contains("[TEMP_PATH]") == true)
             #expect(digest.messageExcerpt?.contains("/Users/[REDACTED_USER]/Client") == true)
             #expect(digest.evidenceID == messageRecord.evidence.id)
 
@@ -1361,6 +1363,25 @@ struct CollectionEngineTests {
         }
     }
 
+    @Test("JSONL reader bounds a batch by bytes as well as records")
+    func byteBoundedJSONLBatch() throws {
+        try withTemporaryDirectory { directory in
+            let file = directory.appending(path: "byte-bounded.jsonl")
+            let line = "{\"payload\":\"1234567890\"}\n"
+            try Data(String(repeating: line, count: 20).utf8).write(to: file)
+
+            let reader = JSONLReader(chunkBytes: 32)
+            let first = try reader.read(file, maximumBytes: 80)
+            #expect(first.hasMoreData)
+            #expect(first.processedBytes >= 80)
+            #expect(first.processedBytes < 80 + line.utf8.count)
+
+            let second = try reader.read(file, after: first.cursor)
+            #expect(second.lines.count + first.lines.count == 20)
+            #expect(!second.hasMoreData)
+        }
+    }
+
     @Test("JSONL cursors recover from file replacement and in-place truncation")
     func jsonlRotationRecovery() throws {
         try withTemporaryDirectory { directory in
@@ -1636,7 +1657,7 @@ struct CollectionEngineTests {
                 ConversationDirectoryCursor.self,
                 from: upgradedData
             )
-            #expect(upgraded.adapterVersion == 2)
+            #expect(upgraded.adapterVersion == 5)
         }
     }
 
@@ -1722,6 +1743,92 @@ struct CollectionEngineTests {
                 homeDirectory: root
             )
             #expect(try store.counts().events == 4)
+        }
+    }
+
+    @Test("Bounded conversation backfill seeds forward collection without replaying older files")
+    func boundedBackfillSeedsForwardCursor() async throws {
+        try await withTemporaryStoreAndRoot { store, root in
+            let sessions = root.appending(path: ".codex/sessions")
+            try FileManager.default.createDirectory(at: sessions, withIntermediateDirectories: true)
+            let old = sessions.appending(path: "rollout-2026-07-01-old.jsonl")
+            let recent = sessions.appending(path: "rollout-2026-08-07-recent.jsonl")
+            try Data(
+                """
+                {"timestamp":"2026-07-01T08:00:00.000Z","type":"session_meta","payload":{"id":"old-session","cwd":"/workspace/old"}}
+                {"timestamp":"2026-07-01T08:00:01.000Z","type":"event_msg","payload":{"type":"user_message","turn_id":"old-turn","message":"old work"}}
+
+                """.utf8
+            ).write(to: old)
+            try Data(
+                """
+                {"timestamp":"2026-08-07T08:00:00.000Z","type":"session_meta","payload":{"id":"recent-session","cwd":"/workspace/recent"}}
+                {"timestamp":"2026-08-07T08:00:01.000Z","type":"event_msg","payload":{"type":"user_message","turn_id":"recent-turn","message":"recent work"}}
+
+                """.utf8
+            ).write(to: recent)
+            let range = DateInterval(
+                start: try #require(ISO8601DateFormatter().date(from: "2026-08-01T00:00:00Z")),
+                end: try #require(ISO8601DateFormatter().date(from: "2026-08-08T00:00:00Z")))
+            try FileManager.default.setAttributes(
+                [.modificationDate: range.start.addingTimeInterval(-1)],
+                ofItemAtPath: old.path)
+            try FileManager.default.setAttributes(
+                [.modificationDate: range.start.addingTimeInterval(1)],
+                ofItemAtPath: recent.path)
+
+            let scoped = ConversationDirectorySource(
+                provider: .codex, root: sessions,
+                cursorScope: LocalCollectionCoordinator.backfillCursorScope(range))
+            let engine = CollectionEngine(store: store, clock: FixedWallClock(range.end))
+            while try await engine.collect(from: scoped, range: range).processedSourceRecords > 0 {}
+            let boundedCursor = try #require(try store.cursor(for: scoped.sourceKey))
+            let seed = try scoped.makeForwardCursorSeed(from: boundedCursor)
+            try store.setCursor(seed.cursor, for: seed.sourceKey, at: range.end)
+
+            let appended =
+                #"{"timestamp":"2026-08-07T09:00:01.000Z","type":"event_msg","payload":{"type":"user_message","turn_id":"new-turn","message":"new work"}}"#
+                + "\n"
+            let handle = try FileHandle(forWritingTo: old)
+            try handle.seekToEnd()
+            try handle.write(contentsOf: Data(appended.utf8))
+            try handle.close()
+
+            let forward = ConversationDirectorySource(provider: .codex, root: sessions)
+            let summary = try await engine.collect(from: forward)
+            #expect(summary.receivedMessages == 1)
+            #expect(summary.readMetrics.recordsObserved == 1)
+            #expect(try store.counts().messages == 2)
+            #expect(seed.audit.candidatesConsidered == 2)
+            #expect(seed.audit.bytesRead == 0)
+        }
+    }
+
+    @Test("Hook backfill accepts only records inside its requested interval")
+    func hookBackfillRange() async throws {
+        try await withTemporaryStoreAndRoot { _, root in
+            let inbox = root.appending(path: "hooks.jsonl")
+            let writer = HookInboxWriter()
+            let start = Date(timeIntervalSince1970: 1_786_089_600)
+            try writer.append(
+                HookEnvelope(
+                    source: .codex, sessionID: "old", turnID: "old", phase: .completed,
+                    occurredAt: start.addingTimeInterval(-1), workingDirectory: nil),
+                to: inbox)
+            try writer.append(
+                HookEnvelope(
+                    source: .codex, sessionID: "current", turnID: "current",
+                    phase: .completed, occurredAt: start.addingTimeInterval(1),
+                    workingDirectory: nil),
+                to: inbox)
+            let batch = try await HookInboxSource(fileURL: inbox).collect(
+                request: CollectionRequest(
+                    range: DateInterval(start: start, duration: 3_600),
+                    cutoff: start.addingTimeInterval(3_600)),
+                cursor: nil)
+            #expect(batch.records.count == 1)
+            #expect(batch.readMetrics.recordsObserved == 2)
+            #expect(batch.readMetrics.recordsAccepted == 1)
         }
     }
 
@@ -2055,6 +2162,26 @@ private struct StubCommandRunner: CommandRunning {
         outputLimit: Int
     ) throws -> ProcessOutput {
         ProcessOutput(status: status, data: Data())
+    }
+}
+
+private final class InvocationCountingRunner: CommandRunning, @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    var invocationCount: Int {
+        lock.withLock { count }
+    }
+
+    func run(
+        executable: URL,
+        arguments: [String],
+        workingDirectory: URL?,
+        environment: [String: String]?,
+        outputLimit: Int
+    ) throws -> ProcessOutput {
+        lock.withLock { count += 1 }
+        return ProcessOutput(status: 0, data: Data())
     }
 }
 

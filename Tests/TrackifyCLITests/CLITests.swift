@@ -11,8 +11,12 @@ struct CLITests {
         #expect(TrackifyCommand.configuration.commandName == "trackify")
         let commands = Set(
             TrackifyCommand.configuration.subcommands.compactMap { $0.configuration.commandName })
-        #expect(commands.isSuperset(of: ["sources", "usage", "recipes", "artifacts"]))
+        #expect(commands.isSuperset(of: ["sources", "usage", "recipes", "reporters", "reports", "artifacts"]))
         #expect(Providers.configuration.subcommands.count == 4)
+        #expect(UsageCommand.configuration.subcommands.count == 6)
+        #expect(ReportsCommand.configuration.subcommands.count == 5)
+        #expect(RecipesCommand.configuration.subcommands.count >= 9)
+        #expect(ReportersCommand.configuration.subcommands.count == 7)
     }
 
     @Test("Context JSON stays inside its total byte budget")

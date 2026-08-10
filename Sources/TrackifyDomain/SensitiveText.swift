@@ -4,6 +4,8 @@ public enum SensitiveText {
     private static let replacements: [(pattern: String, replacement: String)] = [
         (#"/Users/[^/\s]+"#, "/Users/[REDACTED_USER]"),
         (#"/home/[^/\s]+"#, "/home/[REDACTED_USER]"),
+        (#"(?:/private)?/var/folders/[^\s\"']+"#, "[TEMP_PATH]"),
+        (#"/tmp/[^\s\"']+"#, "[TEMP_PATH]"),
         (#"\bsk-[A-Za-z0-9_-]{12,}\b"#, "[REDACTED_OPENAI_KEY]"),
         (#"\bgh[pousr]_[A-Za-z0-9]{12,}\b"#, "[REDACTED_GITHUB_TOKEN]"),
         (#"\bAKIA[A-Z0-9]{16}\b"#, "[REDACTED_AWS_KEY]"),
@@ -48,13 +50,17 @@ public enum MessageTextSanitizer {
 
     public static func sanitize(_ value: String) -> String {
         let redacted = SensitiveText.redact(value)
-        let withoutAttachments = attachmentPatterns.reduce(redacted) { result, pattern in
-            result.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
-        }
+        let withoutAttachments = removingAttachments(redacted)
         let sanitized = withoutAttachments.trimmingCharacters(in: .whitespacesAndNewlines)
         return sanitized.isEmpty && !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             ? "[Attachment]"
             : sanitized
+    }
+
+    public static func removingAttachments(_ value: String) -> String {
+        attachmentPatterns.reduce(value) { result, pattern in
+            result.replacingOccurrences(of: pattern, with: "", options: .regularExpression)
+        }
     }
 
     public static func canonicalKey(_ value: String) -> String {

@@ -120,9 +120,16 @@ public struct HookInboxSource: SourceAdapter {
         decoder.dateDecodingStrategy = .iso8601
         var sessions: [ConversationSession] = []
         var records: [CollectedRecord] = []
+        var acceptedRecords = 0
         for line in result.lines {
             let envelope = try decoder.decode(HookEnvelope.self, from: line)
             guard envelope.source == .codex || envelope.source == .claude else { continue }
+            if let range = request.range,
+                !(envelope.occurredAt >= range.start && envelope.occurredAt < range.end)
+            {
+                continue
+            }
+            acceptedRecords += 1
             let sessionID = ConversationRecordFactory.sessionID(
                 source: envelope.source,
                 externalID: envelope.sessionID
@@ -171,6 +178,14 @@ public struct HookInboxSource: SourceAdapter {
             sessions: sessions,
             records: records,
             processedSourceRecords: result.processedRecordCount,
+            readMetrics: CollectionReadMetrics(
+                unit: .file,
+                candidatesConsidered: 1,
+                openedUnitFingerprints: result.processedBytes > 0
+                    ? [StableHash.sha256(fileURL.path)] : [],
+                bytesRead: result.processedBytes,
+                recordsObserved: result.processedRecordCount,
+                recordsAccepted: acceptedRecords),
             nextCursor: try JSONEncoder().encode(result.cursor)
         )
     }

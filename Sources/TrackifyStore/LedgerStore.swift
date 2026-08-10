@@ -36,6 +36,29 @@ public struct IngestResult: Equatable, Sendable {
     }
 }
 
+/// One canonical observation and its projected ledger event. Keeping this
+/// persistence DTO in the store layer lets collection commit a source batch
+/// atomically without making the store depend on an engine adapter type.
+public struct LedgerEvidenceRecord: Equatable, Sendable {
+    public let evidence: SourceEvidence
+    public let event: LedgerEvent
+
+    public init(evidence: SourceEvidence, event: LedgerEvent) {
+        self.evidence = evidence
+        self.event = event
+    }
+}
+
+public struct LedgerEvidenceBatchResult: Equatable, Sendable {
+    public let insertedObservations: Int
+    public let insertedEvents: Int
+
+    public init(insertedObservations: Int, insertedEvents: Int) {
+        self.insertedObservations = insertedObservations
+        self.insertedEvents = insertedEvents
+    }
+}
+
 public struct LedgerHealth: Codable, Equatable, Sendable {
     public let integrity: String
     public let databaseBytes: Int64
@@ -68,12 +91,23 @@ public struct SourceStatistics: Codable, Equatable, Sendable {
     }
 }
 
+public enum LedgerDurability: Equatable, Sendable {
+    case standard
+    /// A shadow rebuild is disposable until it is verified and exported into
+    /// a fully durable standalone SQLite snapshot.
+    case disposableShadow
+}
+
 public final class LedgerStore: @unchecked Sendable {
     public let databaseURL: URL
     let database: DatabasePool
     let encoder: JSONEncoder
+    private let indexesSearchIncrementally: Bool
 
-    public init(databaseURL: URL) throws {
+    public init(
+        databaseURL: URL,
+        durability: LedgerDurability = .standard
+    ) throws {
         self.databaseURL = databaseURL.standardizedFileURL
         let parent = self.databaseURL.deletingLastPathComponent()
         try FileManager.default.createDirectory(
@@ -100,9 +134,13 @@ public final class LedgerStore: @unchecked Sendable {
         configuration.busyMode = .timeout(5)
         configuration.prepareDatabase { db in
             try db.execute(sql: "PRAGMA foreign_keys = ON")
+            if durability == .disposableShadow {
+                try db.execute(sql: "PRAGMA synchronous = OFF")
+            }
         }
 
         database = try DatabasePool(path: self.databaseURL.path, configuration: configuration)
+        indexesSearchIncrementally = durability == .standard
 
         encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
@@ -181,110 +219,174 @@ public final class LedgerStore: @unchecked Sendable {
     }
 
     public func ingest(evidence: SourceEvidence, event: LedgerEvent) throws -> IngestResult {
-        let canonicalKey = Self.canonicalKey(for: evidence)
-
         return try database.write { db in
-            var canonicalPayload = event.payload
-            if let messageID = canonicalPayload["messageID"],
-                let canonicalID = try String.fetchOne(
-                    db,
-                    sql: "SELECT canonical_id FROM message_aliases WHERE alias_id = ?",
-                    arguments: [messageID]
-                )
-            {
-                canonicalPayload["messageID"] = canonicalID
-            }
-            let payload = try encoder.encode(canonicalPayload)
-            let existingID = try String.fetchOne(
+            try ingest(evidence: evidence, event: event, db: db)
+        }
+    }
+
+    private func ingest(
+        evidence: SourceEvidence,
+        event: LedgerEvent,
+        db: Database
+    ) throws -> IngestResult {
+        let canonicalKey = Self.canonicalKey(for: evidence)
+        var canonicalPayload = event.payload
+        if let messageID = canonicalPayload["messageID"],
+            let canonicalID = try String.fetchOne(
                 db,
-                sql: "SELECT id FROM source_observations WHERE canonical_key = ?",
-                arguments: [canonicalKey]
+                sql: "SELECT canonical_id FROM message_aliases WHERE alias_id = ?",
+                arguments: [messageID]
             )
+        {
+            canonicalPayload["messageID"] = canonicalID
+        }
+        let payload = try encoder.encode(canonicalPayload)
+        let existingID = try String.fetchOne(
+            db,
+            sql: "SELECT id FROM source_observations WHERE canonical_key = ?",
+            arguments: [canonicalKey]
+        )
 
-            let canonicalID: EvidenceID
-            let insertedObservation: Bool
+        let canonicalID: EvidenceID
+        let insertedObservation: Bool
 
-            if let existingID {
-                canonicalID = EvidenceID(existingID)
-                insertedObservation = false
-                try db.execute(
-                    sql: """
-                        UPDATE source_observations
-                        SET last_observed_at = MAX(last_observed_at, ?),
-                            adapter_version = MAX(adapter_version, ?)
-                        WHERE canonical_key = ?
-                        """,
-                    arguments: [evidence.observedAt.timeIntervalSince1970, evidence.adapterVersion, canonicalKey]
-                )
-            } else {
-                canonicalID = evidence.id
-                insertedObservation = true
-                try db.execute(
-                    sql: """
-                        INSERT INTO source_observations (
-                            id, canonical_key, source, ingestion_path, source_record_id,
-                            fingerprint, occurred_at, first_observed_at, last_observed_at, adapter_version
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                    arguments: [
-                        evidence.id.rawValue,
-                        canonicalKey,
-                        evidence.source.rawValue,
-                        evidence.ingestionPath.rawValue,
-                        evidence.sourceRecordID,
-                        evidence.fingerprint,
-                        evidence.occurredAt.timeIntervalSince1970,
-                        evidence.observedAt.timeIntervalSince1970,
-                        evidence.observedAt.timeIntervalSince1970,
-                        evidence.adapterVersion,
-                    ]
-                )
-            }
-
-            let resolvedRepositoryID: RepositoryID?
-            if let repositoryID = event.repositoryID {
-                resolvedRepositoryID = repositoryID
-            } else if let sessionID = event.sessionID {
-                resolvedRepositoryID = try String.fetchOne(
-                    db,
-                    sql: "SELECT repository_id FROM session_repositories WHERE session_id = ? ORDER BY confidence DESC LIMIT 1",
-                    arguments: [sessionID.rawValue]
-                ).map { RepositoryID($0) }
-            } else {
-                resolvedRepositoryID = nil
-            }
-
+        if let existingID {
+            canonicalID = EvidenceID(existingID)
+            insertedObservation = false
             try db.execute(
                 sql: """
-                    INSERT INTO events (
-                        id, evidence_id, occurred_at, observed_at, source, kind,
-                        repository_id, working_copy_id, session_id, state, payload_json, schema_version
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(id) DO NOTHING
+                    UPDATE source_observations
+                    SET last_observed_at = MAX(last_observed_at, ?),
+                        adapter_version = MAX(adapter_version, ?)
+                    WHERE canonical_key = ?
+                    """,
+                arguments: [evidence.observedAt.timeIntervalSince1970, evidence.adapterVersion, canonicalKey]
+            )
+        } else {
+            canonicalID = evidence.id
+            insertedObservation = true
+            try db.execute(
+                sql: """
+                    INSERT INTO source_observations (
+                        id, canonical_key, source, ingestion_path, source_record_id,
+                        fingerprint, occurred_at, first_observed_at, last_observed_at, adapter_version
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                 arguments: [
-                    event.id.rawValue,
-                    canonicalID.rawValue,
-                    event.occurredAt.timeIntervalSince1970,
-                    event.observedAt.timeIntervalSince1970,
-                    event.source.rawValue,
-                    event.kind.rawValue,
-                    resolvedRepositoryID?.rawValue,
-                    event.workingCopyID?.rawValue,
-                    event.sessionID?.rawValue,
-                    event.state?.rawValue,
-                    payload,
-                    event.schemaVersion,
+                    evidence.id.rawValue,
+                    canonicalKey,
+                    evidence.source.rawValue,
+                    evidence.ingestionPath.rawValue,
+                    evidence.sourceRecordID,
+                    evidence.fingerprint,
+                    evidence.occurredAt.timeIntervalSince1970,
+                    evidence.observedAt.timeIntervalSince1970,
+                    evidence.observedAt.timeIntervalSince1970,
+                    evidence.adapterVersion,
                 ]
             )
-            let insertedEvent = db.changesCount == 1
-
-            return IngestResult(
-                canonicalEvidenceID: canonicalID,
-                insertedObservation: insertedObservation,
-                insertedEvent: insertedEvent
-            )
         }
+
+        let resolvedRepositoryID: RepositoryID?
+        if let repositoryID = event.repositoryID {
+            resolvedRepositoryID = repositoryID
+        } else if event.kind == .agentMessageObserved,
+            let messageID = event.payload["messageID"],
+            let messageRepositoryID = try String.fetchOne(
+                db,
+                sql: """
+                    SELECT message_repository_id
+                    FROM session_messages
+                    WHERE id = COALESCE(
+                        (SELECT canonical_id FROM message_aliases WHERE alias_id = ?), ?)
+                    """,
+                arguments: [messageID, messageID])
+        {
+            resolvedRepositoryID = RepositoryID(messageRepositoryID)
+        } else if let sessionID = event.sessionID {
+            resolvedRepositoryID = try String.fetchOne(
+                db,
+                sql: "SELECT repository_id FROM session_repositories WHERE session_id = ? ORDER BY confidence DESC LIMIT 1",
+                arguments: [sessionID.rawValue]
+            ).map { RepositoryID($0) }
+        } else {
+            resolvedRepositoryID = nil
+        }
+
+        try db.execute(
+            sql: """
+                INSERT INTO events (
+                    id, evidence_id, occurred_at, observed_at, source, kind,
+                    repository_id, working_copy_id, session_id, state, payload_json, schema_version
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO NOTHING
+                """,
+            arguments: [
+                event.id.rawValue,
+                canonicalID.rawValue,
+                event.occurredAt.timeIntervalSince1970,
+                event.observedAt.timeIntervalSince1970,
+                event.source.rawValue,
+                event.kind.rawValue,
+                resolvedRepositoryID?.rawValue,
+                event.workingCopyID?.rawValue,
+                event.sessionID?.rawValue,
+                event.state?.rawValue,
+                payload,
+                event.schemaVersion,
+            ]
+        )
+        let insertedEvent = db.changesCount == 1
+
+        if insertedEvent,
+            event.kind == .agentRunStarted || event.kind == .agentRunFinished,
+            let sourceTurnID = canonicalPayload["turnID"]
+        {
+            let logicalTurnID = StableHash.sha256(
+                "logical-turn:\(event.source.rawValue):\(sourceTurnID)")
+            if let nextState = event.state?.rawValue {
+                let existingState = try String.fetchOne(
+                    db, sql: "SELECT state FROM logical_turns WHERE id = ?",
+                    arguments: [logicalTurnID])
+                let terminal = Set([
+                    ObservedState.completed.rawValue,
+                    ObservedState.failed.rawValue,
+                    ObservedState.interrupted.rawValue,
+                ])
+                if let existingState,
+                    terminal.contains(existingState), terminal.contains(nextState),
+                    existingState != nextState
+                {
+                    try Self.recordQualityIssue(
+                        db: db, source: event.source,
+                        sourceKey: "logical-turn:\(logicalTurnID)",
+                        code: "conflicting-terminal-state",
+                        detail: "One authoritative logical turn has incompatible terminal states.",
+                        observedAt: event.observedAt, affectsWorkMetrics: true)
+                }
+                try db.execute(
+                    sql: """
+                        UPDATE logical_turns
+                        SET state = ?,
+                            started_at = CASE
+                                WHEN ? = 'in_progress' THEN COALESCE(started_at, ?)
+                                ELSE started_at END,
+                            last_observed_at = MAX(COALESCE(last_observed_at, ?), ?)
+                        WHERE id = ?
+                        """,
+                    arguments: [
+                        nextState, nextState, event.occurredAt.timeIntervalSince1970,
+                        event.observedAt.timeIntervalSince1970,
+                        event.observedAt.timeIntervalSince1970, logicalTurnID,
+                    ])
+            }
+        }
+
+        return IngestResult(
+            canonicalEvidenceID: canonicalID,
+            insertedObservation: insertedObservation,
+            insertedEvent: insertedEvent
+        )
     }
 
     public func upsert(
@@ -465,9 +567,52 @@ public final class LedgerStore: @unchecked Sendable {
 
     public func upsert(message: ConversationMessage) throws {
         try database.write { db in
-            let sanitizedText = MessageTextSanitizer.sanitize(message.normalizedText)
-            let occurredAt = message.occurredAt?.timeIntervalSince1970
-            if let canonical = try Row.fetchOne(
+            try upsert(
+                message: message, db: db,
+                indexSearch: indexesSearchIncrementally)
+        }
+    }
+
+    private func upsert(
+        message: ConversationMessage,
+        db: Database,
+        indexSearch: Bool
+    ) throws {
+        let sanitizedText = MessageTextSanitizer.sanitize(message.normalizedText)
+        let occurredAt = message.occurredAt?.timeIntervalSince1970
+        let source =
+            try String.fetchOne(
+                db, sql: "SELECT source FROM sessions WHERE id = ?",
+                arguments: [message.sessionID.rawValue]) ?? SourceKind.simulation.rawValue
+        let association = try Self.repositoryAssociation(
+            db: db, workingDirectory: message.provenance.workingDirectory)
+        try Self.upsertLogicalProjection(
+            db: db, message: message, source: source,
+            sanitizedText: sanitizedText, association: association)
+        if let existingLogicalID = try String.fetchOne(
+            db, sql: "SELECT id FROM session_messages WHERE id = ?",
+            arguments: [message.id.rawValue])
+        {
+            if indexSearch && ConversationMessageVisibility.isWorkEvidence(message) {
+                let repositoryID: RepositoryID?
+                if let association {
+                    repositoryID = RepositoryID(association.repositoryID)
+                } else {
+                    repositoryID = try Self.repositoryID(
+                        db: db, sessionID: message.sessionID)
+                }
+                try Self.index(
+                    db: db, kind: .message, entityID: existingLogicalID,
+                    repositoryID: repositoryID,
+                    occurredAt: message.occurredAt, content: sanitizedText)
+            }
+            return
+        }
+        // Timestamp/text proximity is only a compatibility bridge for
+        // pre-provenance records. Authoritative provider identities must
+        // remain distinct even when two messages happen to be identical.
+        if message.provenance.classificationReason == "legacy-compatible",
+            let canonical = try Row.fetchOne(
                 db,
                 sql: """
                     SELECT id, source_message_id
@@ -492,70 +637,283 @@ public final class LedgerStore: @unchecked Sendable {
                     LedgerSchema.messageDuplicateTolerance,
                     occurredAt,
                 ]
-            ) {
-                let canonicalID: String = canonical["id"]
-                if canonicalID != message.id.rawValue {
-                    try db.execute(
-                        sql: "INSERT OR REPLACE INTO message_aliases (alias_id, canonical_id) VALUES (?, ?)",
-                        arguments: [message.id.rawValue, canonicalID]
-                    )
-                }
-                if (canonical["source_message_id"] as String?) == nil, let sourceID = message.sourceMessageID {
-                    try db.execute(
-                        sql: "UPDATE session_messages SET source_message_id = ? WHERE id = ?",
-                        arguments: [sourceID, canonicalID]
-                    )
-                }
-                let repositoryID = try Self.repositoryID(db: db, sessionID: message.sessionID)
-                try Self.index(
-                    db: db,
-                    kind: .message,
-                    entityID: canonicalID,
-                    repositoryID: repositoryID,
-                    occurredAt: message.occurredAt,
-                    content: sanitizedText
-                )
-                return
-            }
-
-            try db.execute(
-                sql: """
-                    INSERT INTO session_messages (
-                        id, session_id, source_message_id, role, occurred_at, normalized_text, fingerprint
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(session_id, fingerprint) DO NOTHING
-                    """,
-                arguments: [
-                    message.id.rawValue,
-                    message.sessionID.rawValue,
-                    message.sourceMessageID,
-                    message.role.rawValue,
-                    occurredAt,
-                    sanitizedText,
-                    message.fingerprint,
-                ]
             )
-            let canonicalID =
-                try String.fetchOne(
-                    db,
-                    sql: "SELECT id FROM session_messages WHERE session_id = ? AND fingerprint = ?",
-                    arguments: [message.sessionID.rawValue, message.fingerprint]
-                ) ?? message.id.rawValue
+        {
+            let canonicalID: String = canonical["id"]
             if canonicalID != message.id.rawValue {
                 try db.execute(
                     sql: "INSERT OR REPLACE INTO message_aliases (alias_id, canonical_id) VALUES (?, ?)",
                     arguments: [message.id.rawValue, canonicalID]
                 )
             }
-            let repositoryID = try Self.repositoryID(db: db, sessionID: message.sessionID)
-            try Self.index(
-                db: db,
-                kind: .message,
-                entityID: canonicalID,
-                repositoryID: repositoryID,
-                occurredAt: message.occurredAt,
-                content: sanitizedText
+            if (canonical["source_message_id"] as String?) == nil, let sourceID = message.sourceMessageID {
+                try db.execute(
+                    sql: "UPDATE session_messages SET source_message_id = ? WHERE id = ?",
+                    arguments: [sourceID, canonicalID]
+                )
+            }
+            if indexSearch && ConversationMessageVisibility.isWorkEvidence(message) {
+                let repositoryID: RepositoryID?
+                if let association {
+                    repositoryID = RepositoryID(association.repositoryID)
+                } else {
+                    repositoryID = try Self.repositoryID(
+                        db: db, sessionID: message.sessionID)
+                }
+                try Self.index(
+                    db: db, kind: .message, entityID: canonicalID,
+                    repositoryID: repositoryID,
+                    occurredAt: message.occurredAt, content: sanitizedText)
+            } else if indexSearch {
+                try Self.removeIndex(db: db, kind: .message, entityID: canonicalID)
+            }
+            return
+        }
+
+        try db.execute(
+            sql: """
+                INSERT INTO session_messages (
+                    id, session_id, source_message_id, role, occurred_at, normalized_text, fingerprint,
+                    source_record_id, source_record_type, source_turn_id,
+                    parent_source_record_id, source_response_id, entrypoint,
+                    message_working_directory, is_meta, is_sidechain, origin,
+                    semantic_kind, disposition, canonical_state,
+                    classification_version, classification_reason,
+                    logical_turn_id, logical_message_id, message_repository_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(session_id, fingerprint) DO NOTHING
+                """,
+            arguments: [
+                message.id.rawValue,
+                message.sessionID.rawValue,
+                message.sourceMessageID,
+                message.role.rawValue,
+                occurredAt,
+                sanitizedText,
+                message.fingerprint,
+                message.provenance.sourceRecordID,
+                message.provenance.sourceRecordType,
+                message.provenance.sourceTurnID,
+                message.provenance.parentSourceRecordID,
+                message.provenance.sourceResponseID,
+                message.provenance.entrypoint,
+                message.provenance.workingDirectory,
+                message.provenance.isMeta,
+                message.provenance.isSidechain,
+                message.provenance.origin.rawValue,
+                message.provenance.semanticKind.rawValue,
+                message.provenance.disposition.rawValue,
+                message.provenance.canonicalState.rawValue,
+                message.provenance.classificationVersion,
+                message.provenance.classificationReason,
+                message.provenance.logicalTurnID?.rawValue,
+                message.provenance.logicalMessageID?.rawValue,
+                association?.repositoryID,
+            ]
+        )
+        let canonicalID =
+            try String.fetchOne(
+                db,
+                sql: "SELECT id FROM session_messages WHERE session_id = ? AND fingerprint = ?",
+                arguments: [message.sessionID.rawValue, message.fingerprint]
+            ) ?? message.id.rawValue
+        if canonicalID != message.id.rawValue {
+            try db.execute(
+                sql: "INSERT OR REPLACE INTO message_aliases (alias_id, canonical_id) VALUES (?, ?)",
+                arguments: [message.id.rawValue, canonicalID]
             )
+        }
+        let repositoryID: RepositoryID?
+        if let association {
+            repositoryID = RepositoryID(association.repositoryID)
+        } else {
+            repositoryID = try Self.repositoryID(
+                db: db, sessionID: message.sessionID)
+        }
+        if indexSearch && ConversationMessageVisibility.isWorkEvidence(message) {
+            try Self.index(
+                db: db, kind: .message, entityID: canonicalID,
+                repositoryID: repositoryID,
+                occurredAt: message.occurredAt, content: sanitizedText)
+        } else if indexSearch {
+            try Self.removeIndex(db: db, kind: .message, entityID: canonicalID)
+        }
+    }
+
+    public func upsert(conversationRecord record: NormalizedConversationRecord) throws {
+        try database.write { db in
+            try upsert(conversationRecord: record, db: db)
+        }
+    }
+
+    private func upsert(
+        conversationRecord record: NormalizedConversationRecord,
+        db: Database
+    ) throws {
+        let isNewRecord =
+            try Int.fetchOne(
+                db,
+                sql: "SELECT COUNT(*) FROM conversation_records WHERE id = ?",
+                arguments: [record.id.rawValue]) == 0
+        let association = try Self.repositoryAssociation(
+            db: db, workingDirectory: record.provenance.workingDirectory)
+        if let turnID = record.provenance.logicalTurnID,
+            let sourceTurnID = record.provenance.sourceTurnID
+        {
+            try db.execute(
+                sql: """
+                    INSERT INTO logical_turns (
+                        id, source, source_turn_id, session_id, origin,
+                        started_at, last_observed_at, state, repository_id,
+                        repository_method, repository_confidence, classification_version)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'unknown', ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        last_observed_at = MAX(logical_turns.last_observed_at, excluded.last_observed_at),
+                        origin = CASE
+                            WHEN (CASE excluded.origin
+                                WHEN 'human' THEN 70 WHEN 'agent' THEN 60
+                                WHEN 'trackify' THEN 50 WHEN 'assistant' THEN 40
+                                WHEN 'provider' THEN 30 WHEN 'hook' THEN 20
+                                WHEN 'tool' THEN 10 WHEN 'system' THEN 5 ELSE 0 END)
+                               > (CASE logical_turns.origin
+                                WHEN 'human' THEN 70 WHEN 'agent' THEN 60
+                                WHEN 'trackify' THEN 50 WHEN 'assistant' THEN 40
+                                WHEN 'provider' THEN 30 WHEN 'hook' THEN 20
+                                WHEN 'tool' THEN 10 WHEN 'system' THEN 5 ELSE 0 END)
+                            THEN excluded.origin ELSE logical_turns.origin END,
+                        repository_id = COALESCE(logical_turns.repository_id, excluded.repository_id),
+                        repository_method = COALESCE(logical_turns.repository_method, excluded.repository_method),
+                        repository_confidence = MAX(
+                            COALESCE(logical_turns.repository_confidence, 0),
+                            COALESCE(excluded.repository_confidence, 0))
+                    """,
+                arguments: [
+                    turnID.rawValue, record.source.rawValue, sourceTurnID,
+                    record.sessionID.rawValue, record.provenance.origin.rawValue,
+                    record.occurredAt?.timeIntervalSince1970,
+                    record.observedAt.timeIntervalSince1970,
+                    association?.repositoryID, association?.method,
+                    association?.confidence,
+                    record.provenance.classificationVersion,
+                ])
+        }
+
+        var canonicalState = record.provenance.canonicalState
+        if canonicalState == .primary,
+            let logicalMessageID = record.provenance.logicalMessageID,
+            let existingSession = try String.fetchOne(
+                db,
+                sql: "SELECT session_id FROM conversation_records WHERE logical_message_id = ? LIMIT 1",
+                arguments: [logicalMessageID.rawValue])
+        {
+            canonicalState = existingSession == record.sessionID.rawValue ? .alias : .replay
+        }
+
+        try db.execute(
+            sql: """
+                INSERT INTO conversation_records (
+                    id, source, session_id, source_record_id, source_record_type,
+                    source_turn_id, parent_source_record_id, source_response_id,
+                    role, occurred_at, observed_at, normalized_text,
+                    text_fingerprint, entrypoint, working_directory, is_meta,
+                    is_sidechain, origin, semantic_kind, disposition,
+                    canonical_state, logical_turn_id, logical_message_id,
+                    repository_id, classification_version,
+                    classification_reason, adapter_version)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    observed_at = MAX(conversation_records.observed_at, excluded.observed_at)
+                """,
+            arguments: [
+                record.id.rawValue, record.source.rawValue,
+                record.sessionID.rawValue, record.provenance.sourceRecordID,
+                record.provenance.sourceRecordType,
+                record.provenance.sourceTurnID,
+                record.provenance.parentSourceRecordID,
+                record.provenance.sourceResponseID,
+                record.role?.rawValue,
+                record.occurredAt?.timeIntervalSince1970,
+                record.observedAt.timeIntervalSince1970,
+                // Canonical content lives in session_messages and
+                // logical_messages. Source records retain provenance and a
+                // fingerprint without duplicating private text for every
+                // transport alias, replay, or diagnostic envelope.
+                Optional<String>.none,
+                record.textFingerprint,
+                record.provenance.entrypoint,
+                record.provenance.workingDirectory,
+                record.provenance.isMeta,
+                record.provenance.isSidechain,
+                record.provenance.origin.rawValue,
+                record.provenance.semanticKind.rawValue,
+                record.provenance.disposition.rawValue,
+                canonicalState.rawValue,
+                record.provenance.logicalTurnID?.rawValue,
+                record.provenance.logicalMessageID?.rawValue,
+                association?.repositoryID,
+                record.provenance.classificationVersion,
+                record.provenance.classificationReason,
+                record.adapterVersion,
+            ])
+
+        if isNewRecord, record.provenance.disposition == .unresolved {
+            try Self.recordQualityIssue(
+                db: db, source: record.source,
+                sourceKey: "adapter:\(record.source.rawValue)",
+                code: "unresolved-record",
+                detail: "One or more provider records have semantics not understood by the active adapter.",
+                observedAt: record.observedAt,
+                affectsWorkMetrics: true)
+        } else if isNewRecord, record.provenance.disposition == .work,
+            record.provenance.logicalMessageID == nil,
+            record.role != nil
+        {
+            try Self.recordQualityIssue(
+                db: db, source: record.source,
+                sourceKey: "projection:\(record.source.rawValue)",
+                code: "work-message-without-logical-identity",
+                detail: "A work-classified message has no canonical logical identity.",
+                observedAt: record.observedAt,
+                affectsWorkMetrics: true)
+        }
+    }
+
+    /// Commits the high-volume conversation projection and its source cursor
+    /// as one unit. A failed batch is fully rolled back, so a cursor can never
+    /// acknowledge evidence that was only partially persisted.
+    public func ingestConversationEvidenceBatch(
+        messages: [ConversationMessage],
+        conversationRecords: [NormalizedConversationRecord],
+        evidenceRecords: [LedgerEvidenceRecord],
+        sourceKey: String,
+        nextCursor: Data?,
+        observedAt: Date
+    ) throws -> LedgerEvidenceBatchResult {
+        try database.write { db in
+            for message in messages {
+                try upsert(
+                    message: message, db: db,
+                    indexSearch: indexesSearchIncrementally)
+            }
+            for record in conversationRecords {
+                try upsert(conversationRecord: record, db: db)
+            }
+
+            var observations = 0
+            var events = 0
+            for record in evidenceRecords {
+                let result = try ingest(
+                    evidence: record.evidence, event: record.event, db: db)
+                if result.insertedObservation { observations += 1 }
+                if result.insertedEvent { events += 1 }
+            }
+            if let nextCursor {
+                try Self.setCursor(
+                    nextCursor, for: sourceKey, at: observedAt, db: db)
+            }
+            return LedgerEvidenceBatchResult(
+                insertedObservations: observations,
+                insertedEvents: events)
         }
     }
 
@@ -674,6 +1032,31 @@ public final class LedgerStore: @unchecked Sendable {
         }
     }
 
+    /// Rebuilds message search from the canonical projection in one set-based
+    /// operation. Shadow backfills defer incremental FTS writes and call this
+    /// after source verification; normal collection continues to index each
+    /// newly observed canonical message immediately.
+    public func rebuildCanonicalMessageSearchIndex() throws {
+        try database.write { db in
+            try db.execute(
+                sql: "DELETE FROM search_documents WHERE entity_type = 'message'")
+            try db.execute(
+                sql: """
+                    INSERT INTO search_documents (
+                        entity_type, entity_id, repository_id, occurred_at, content)
+                    SELECT 'message', message.id, message.message_repository_id,
+                           message.occurred_at, message.normalized_text
+                    FROM session_messages message
+                    WHERE message.disposition = 'work'
+                      AND message.canonical_state = 'primary'
+                      AND message.role != 'system'
+                      AND NOT EXISTS (
+                          SELECT 1 FROM message_aliases alias
+                          WHERE alias.alias_id = message.id)
+                    """)
+        }
+    }
+
     public func save(report: WorkReport) throws {
         let evidenceIDs = try encoder.encode(report.evidenceIDs.map(\.rawValue))
         try database.write { db in
@@ -763,17 +1146,26 @@ public final class LedgerStore: @unchecked Sendable {
 
     public func setCursor(_ data: Data, for sourceKey: String, at date: Date) throws {
         try database.write { db in
-            try db.execute(
-                sql: """
-                    INSERT INTO collector_cursors (source_key, cursor_json, updated_at)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(source_key) DO UPDATE SET
-                        cursor_json = excluded.cursor_json,
-                        updated_at = excluded.updated_at
-                    """,
-                arguments: [sourceKey, data, date.timeIntervalSince1970]
-            )
+            try Self.setCursor(data, for: sourceKey, at: date, db: db)
         }
+    }
+
+    private static func setCursor(
+        _ data: Data,
+        for sourceKey: String,
+        at date: Date,
+        db: Database
+    ) throws {
+        try db.execute(
+            sql: """
+                INSERT INTO collector_cursors (source_key, cursor_json, updated_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(source_key) DO UPDATE SET
+                    cursor_json = excluded.cursor_json,
+                    updated_at = excluded.updated_at
+                """,
+            arguments: [sourceKey, data, date.timeIntervalSince1970]
+        )
     }
 
     public func cursor(for sourceKey: String) throws -> Data? {
@@ -1053,9 +1445,9 @@ public final class LedgerStore: @unchecked Sendable {
             try Row.fetchAll(
                 db,
                 sql: """
-                    SELECT id, session_id, source_message_id, role, occurred_at, normalized_text, fingerprint
+                    SELECT *
                     FROM (
-                        SELECT id, session_id, source_message_id, role, occurred_at, normalized_text, fingerprint
+                        SELECT *
                         FROM session_messages
                         WHERE session_id = ?
                         ORDER BY occurred_at DESC, id DESC
@@ -1196,31 +1588,17 @@ public final class LedgerStore: @unchecked Sendable {
             let rows = try Row.fetchAll(
                 db,
                 sql: """
-                    SELECT DISTINCT m.id, m.session_id, m.source_message_id, m.role,
-                           m.occurred_at, m.normalized_text, m.fingerprint
+                    SELECT DISTINCT m.*
                     FROM session_messages m
-                    JOIN session_repositories sr ON sr.session_id = m.session_id
-                    WHERE sr.repository_id = ? AND COALESCE(m.occurred_at, 0) >= ?
+                    LEFT JOIN session_repositories sr ON sr.session_id = m.session_id
+                    WHERE COALESCE(m.message_repository_id, sr.repository_id) = ?
+                      AND COALESCE(m.occurred_at, 0) >= ?
                     ORDER BY m.occurred_at DESC, m.id
                     LIMIT ?
                     """,
                 arguments: [repositoryID.rawValue, since.timeIntervalSince1970, limit]
             )
-            return try rows.map { row in
-                let roleValue: String = row["role"]
-                guard let role = MessageRole(rawValue: roleValue) else {
-                    throw LedgerStoreError.unsupportedValue(type: "MessageRole", value: roleValue)
-                }
-                return ConversationMessage(
-                    id: MessageID(row["id"] as String),
-                    sessionID: SessionID(row["session_id"] as String),
-                    sourceMessageID: row["source_message_id"],
-                    role: role,
-                    occurredAt: (row["occurred_at"] as Double?).map { Date(timeIntervalSince1970: $0) },
-                    normalizedText: MessageTextSanitizer.sanitize(row["normalized_text"] as String),
-                    fingerprint: row["fingerprint"]
-                )
-            }
+            return try rows.map(Self.decodeMessage)
         }
     }
 
@@ -1260,8 +1638,7 @@ public final class LedgerStore: @unchecked Sendable {
             let rows = try Row.fetchAll(
                 db,
                 sql: """
-                    SELECT id, session_id, source_message_id, role,
-                           occurred_at, normalized_text, fingerprint
+                    SELECT *
                     FROM session_messages
                     WHERE id IN (\(placeholders))
                     """,
@@ -1445,8 +1822,18 @@ public final class LedgerStore: @unchecked Sendable {
     private static func associateSessions(db: Database, with workingCopy: WorkingCopy) throws {
         let rows = try Row.fetchAll(
             db,
-            sql: "SELECT id, started_at FROM sessions WHERE working_directory = ? OR working_directory LIKE ?",
-            arguments: [workingCopy.canonicalPath, workingCopy.canonicalPath + "/%"]
+            sql: """
+                SELECT DISTINCT sessions.id, sessions.started_at
+                FROM sessions
+                LEFT JOIN session_messages ON session_messages.session_id = sessions.id
+                WHERE sessions.working_directory = ? OR sessions.working_directory LIKE ?
+                   OR session_messages.message_working_directory = ?
+                   OR session_messages.message_working_directory LIKE ?
+                """,
+            arguments: [
+                workingCopy.canonicalPath, workingCopy.canonicalPath + "/%",
+                workingCopy.canonicalPath, workingCopy.canonicalPath + "/%",
+            ]
         )
         for row in rows {
             let sessionID: String = row["id"]
@@ -1462,14 +1849,61 @@ public final class LedgerStore: @unchecked Sendable {
                 arguments: [sessionID, workingCopy.repositoryID.rawValue, workingCopy.id.rawValue, row["started_at"] as Double?]
             )
             try db.execute(
-                sql:
-                    "UPDATE search_documents SET repository_id = ? WHERE entity_type = 'message' AND entity_id IN (SELECT id FROM session_messages WHERE session_id = ?)",
-                arguments: [workingCopy.repositoryID.rawValue, sessionID]
-            )
+                sql: """
+                    UPDATE session_messages SET message_repository_id = ?
+                    WHERE session_id = ? AND message_repository_id IS NULL
+                      AND (
+                        message_working_directory = ?
+                        OR message_working_directory LIKE ?
+                        OR (message_working_directory IS NULL AND EXISTS (
+                            SELECT 1 FROM sessions
+                            WHERE sessions.id = session_messages.session_id
+                              AND (sessions.working_directory = ?
+                                   OR sessions.working_directory LIKE ?)))
+                      )
+                    """,
+                arguments: [
+                    workingCopy.repositoryID.rawValue, sessionID,
+                    workingCopy.canonicalPath, workingCopy.canonicalPath + "/%",
+                    workingCopy.canonicalPath, workingCopy.canonicalPath + "/%",
+                ])
             try db.execute(
-                sql: "UPDATE events SET repository_id = ? WHERE session_id = ? AND repository_id IS NULL",
-                arguments: [workingCopy.repositoryID.rawValue, sessionID]
-            )
+                sql: """
+                    UPDATE logical_messages SET repository_id = ?
+                    WHERE repository_id IS NULL AND id IN (
+                        SELECT COALESCE(logical_message_id, id)
+                        FROM session_messages
+                        WHERE session_id = ? AND message_repository_id = ?)
+                    """,
+                arguments: [
+                    workingCopy.repositoryID.rawValue, sessionID,
+                    workingCopy.repositoryID.rawValue,
+                ])
+            try db.execute(
+                sql: """
+                    UPDATE search_documents SET repository_id = ?
+                    WHERE entity_type = 'message' AND repository_id IS NULL
+                      AND entity_id IN (
+                        SELECT id FROM session_messages
+                        WHERE session_id = ? AND message_repository_id = ?)
+                    """,
+                arguments: [
+                    workingCopy.repositoryID.rawValue, sessionID,
+                    workingCopy.repositoryID.rawValue,
+                ])
+            try db.execute(
+                sql: """
+                    UPDATE events SET repository_id = ?
+                    WHERE session_id = ? AND repository_id IS NULL
+                      AND kind = 'agent.message.observed'
+                      AND json_extract(payload_json, '$.messageID') IN (
+                        SELECT id FROM session_messages
+                        WHERE session_id = ? AND message_repository_id = ?)
+                    """,
+                arguments: [
+                    workingCopy.repositoryID.rawValue, sessionID, sessionID,
+                    workingCopy.repositoryID.rawValue,
+                ])
         }
     }
 
@@ -1494,12 +1928,445 @@ public final class LedgerStore: @unchecked Sendable {
         )
     }
 
+    private static func removeIndex(
+        db: Database,
+        kind: SearchDocumentKind,
+        entityID: String
+    ) throws {
+        try db.execute(
+            sql: "DELETE FROM search_documents WHERE entity_type = ? AND entity_id = ?",
+            arguments: [kind.rawValue, entityID])
+    }
+
     private static func repositoryID(db: Database, sessionID: SessionID) throws -> RepositoryID? {
         try String.fetchOne(
             db,
             sql: "SELECT repository_id FROM session_repositories WHERE session_id = ? ORDER BY confidence DESC LIMIT 1",
             arguments: [sessionID.rawValue]
         ).map { RepositoryID($0) }
+    }
+
+    private static func repositoryAssociation(
+        db: Database,
+        workingDirectory: String?
+    ) throws -> (repositoryID: String, method: String, confidence: Double)? {
+        guard let workingDirectory, !workingDirectory.isEmpty else { return nil }
+        guard
+            let row = try Row.fetchOne(
+                db,
+                sql: """
+                    SELECT repository_id
+                    FROM working_copies
+                    WHERE ? = canonical_path OR ? LIKE canonical_path || '/%'
+                    ORDER BY LENGTH(canonical_path) DESC
+                    LIMIT 1
+                    """,
+                arguments: [workingDirectory, workingDirectory])
+        else { return nil }
+        return (row["repository_id"], "record_working_directory", 1.0)
+    }
+
+    private static func upsertLogicalProjection(
+        db: Database,
+        message: ConversationMessage,
+        source: String,
+        sanitizedText: String,
+        association: (repositoryID: String, method: String, confidence: Double)?
+    ) throws {
+        if let turnID = message.provenance.logicalTurnID,
+            let sourceTurnID = message.provenance.sourceTurnID
+        {
+            try db.execute(
+                sql: """
+                    INSERT INTO logical_turns (
+                        id, source, source_turn_id, session_id, origin,
+                        started_at, last_observed_at, state, repository_id,
+                        repository_method, repository_confidence,
+                        classification_version)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 'unknown', ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        started_at = MIN(
+                            COALESCE(logical_turns.started_at, excluded.started_at),
+                            COALESCE(excluded.started_at, logical_turns.started_at)),
+                        last_observed_at = MAX(
+                            COALESCE(logical_turns.last_observed_at, excluded.last_observed_at),
+                            COALESCE(excluded.last_observed_at, logical_turns.last_observed_at)),
+                        origin = CASE
+                            WHEN (CASE excluded.origin
+                                WHEN 'human' THEN 70 WHEN 'agent' THEN 60
+                                WHEN 'trackify' THEN 50 WHEN 'assistant' THEN 40
+                                WHEN 'provider' THEN 30 WHEN 'hook' THEN 20
+                                WHEN 'tool' THEN 10 WHEN 'system' THEN 5 ELSE 0 END)
+                               > (CASE logical_turns.origin
+                                WHEN 'human' THEN 70 WHEN 'agent' THEN 60
+                                WHEN 'trackify' THEN 50 WHEN 'assistant' THEN 40
+                                WHEN 'provider' THEN 30 WHEN 'hook' THEN 20
+                                WHEN 'tool' THEN 10 WHEN 'system' THEN 5 ELSE 0 END)
+                            THEN excluded.origin ELSE logical_turns.origin END,
+                        repository_id = COALESCE(logical_turns.repository_id, excluded.repository_id),
+                        repository_method = COALESCE(logical_turns.repository_method, excluded.repository_method),
+                        repository_confidence = MAX(
+                            COALESCE(logical_turns.repository_confidence, 0),
+                            COALESCE(excluded.repository_confidence, 0))
+                    """,
+                arguments: [
+                    turnID.rawValue, source, sourceTurnID,
+                    message.sessionID.rawValue, message.provenance.origin.rawValue,
+                    message.occurredAt?.timeIntervalSince1970,
+                    message.occurredAt?.timeIntervalSince1970,
+                    association?.repositoryID, association?.method,
+                    association?.confidence,
+                    message.provenance.classificationVersion,
+                ])
+        }
+
+        let logicalMessageID =
+            message.provenance.logicalMessageID?.rawValue
+            ?? message.id.rawValue
+        let textFingerprint = StableHash.sha256(sanitizedText)
+        if let existing = try Row.fetchOne(
+            db,
+            sql: "SELECT role, text_fingerprint, origin, semantic_kind, disposition FROM logical_messages WHERE id = ?",
+            arguments: [logicalMessageID])
+        {
+            let existingRole: String = existing["role"]
+            let existingFingerprint: String = existing["text_fingerprint"]
+            let existingOrigin: String = existing["origin"]
+            let existingKind: String = existing["semantic_kind"]
+            let existingDisposition: String = existing["disposition"]
+            if existingRole != message.role.rawValue
+                || existingFingerprint != textFingerprint
+                || existingOrigin != message.provenance.origin.rawValue
+                || existingKind != message.provenance.semanticKind.rawValue
+                || existingDisposition != message.provenance.disposition.rawValue
+            {
+                try recordQualityIssue(
+                    db: db, source: SourceKind(rawValue: source),
+                    sourceKey: "logical-message:\(logicalMessageID)",
+                    code: "conflicting-logical-message",
+                    detail: "One authoritative logical message identity mapped to conflicting content or classification.",
+                    observedAt: message.occurredAt
+                        ?? Date(
+                            timeIntervalSince1970: try Double.fetchOne(
+                                db, sql: "SELECT last_observed_at FROM sessions WHERE id = ?",
+                                arguments: [message.sessionID.rawValue]) ?? 0),
+                    affectsWorkMetrics: true)
+            }
+            return
+        }
+        try db.execute(
+            sql: """
+                INSERT INTO logical_messages (
+                    id, logical_turn_id, source, role, occurred_at,
+                    normalized_text, text_fingerprint, origin, semantic_kind,
+                    disposition, repository_id, classification_version,
+                    classification_reason)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+            arguments: [
+                logicalMessageID,
+                message.provenance.logicalTurnID?.rawValue,
+                source, message.role.rawValue,
+                message.occurredAt?.timeIntervalSince1970,
+                sanitizedText, textFingerprint,
+                message.provenance.origin.rawValue,
+                message.provenance.semanticKind.rawValue,
+                message.provenance.disposition.rawValue,
+                association?.repositoryID,
+                message.provenance.classificationVersion,
+                message.provenance.classificationReason,
+            ])
+    }
+
+    private static func recordQualityIssue(
+        db: Database,
+        source: SourceKind?,
+        sourceKey: String,
+        code: String,
+        detail: String,
+        observedAt: Date,
+        affectsWorkMetrics: Bool
+    ) throws {
+        let id = StableHash.sha256("evidence-quality:\(sourceKey):\(code)")
+        try db.execute(
+            sql: """
+                INSERT INTO evidence_quality_issues (
+                    id, source, source_key, code, detail, issue_count,
+                    first_observed_at, last_observed_at, affects_work_metrics)
+                VALUES (?, ?, ?, ?, ?, 1, ?, ?, ?)
+                ON CONFLICT(source_key, code) DO UPDATE SET
+                    detail = excluded.detail,
+                    issue_count = evidence_quality_issues.issue_count + 1,
+                    last_observed_at = MAX(
+                        evidence_quality_issues.last_observed_at,
+                        excluded.last_observed_at),
+                    affects_work_metrics = MAX(
+                        evidence_quality_issues.affects_work_metrics,
+                        excluded.affects_work_metrics)
+                """,
+            arguments: [
+                id, source?.rawValue, sourceKey, code, detail,
+                observedAt.timeIntervalSince1970,
+                observedAt.timeIntervalSince1970,
+                affectsWorkMetrics,
+            ])
+    }
+
+    public func evidenceQuality() throws -> EvidenceQualitySnapshot {
+        try database.read { db in
+            let issues = try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT id, source, source_key, code, detail, issue_count,
+                           first_observed_at, last_observed_at, affects_work_metrics
+                    FROM evidence_quality_issues
+                    ORDER BY affects_work_metrics DESC, last_observed_at DESC, code
+                    """
+            ).map { row in
+                EvidenceQualityIssue(
+                    id: EvidenceQualityIssueID(row["id"] as String),
+                    source: (row["source"] as String?).flatMap(SourceKind.init(rawValue:)),
+                    sourceKey: row["source_key"], code: row["code"],
+                    detail: row["detail"], count: row["issue_count"],
+                    firstObservedAt: Date(
+                        timeIntervalSince1970: row["first_observed_at"] as Double),
+                    lastObservedAt: Date(
+                        timeIntervalSince1970: row["last_observed_at"] as Double),
+                    affectsWorkMetrics: row["affects_work_metrics"])
+            }
+            let unresolved =
+                try Int.fetchOne(
+                    db, sql: "SELECT COUNT(*) FROM conversation_records WHERE disposition = 'unresolved'") ?? 0
+            let diagnostics =
+                try Int.fetchOne(
+                    db, sql: "SELECT COUNT(*) FROM conversation_records WHERE disposition = 'diagnostic'") ?? 0
+            let aliases =
+                try Int.fetchOne(
+                    db, sql: "SELECT COUNT(*) FROM conversation_records WHERE canonical_state = 'alias'") ?? 0
+            let replays =
+                try Int.fetchOne(
+                    db, sql: "SELECT COUNT(*) FROM conversation_records WHERE canonical_state = 'replay'") ?? 0
+            let leakedInternal =
+                try Int.fetchOne(
+                    db,
+                    sql: """
+                        SELECT COUNT(*)
+                        FROM session_messages
+                        JOIN internal_provider_operations
+                          ON internal_provider_operations.working_directory = session_messages.message_working_directory
+                        WHERE session_messages.disposition = 'work'
+                        """) ?? 0
+            var allIssues = issues
+            if leakedInternal > 0 {
+                let observedAt = Date(timeIntervalSince1970: 0)
+                allIssues.insert(
+                    EvidenceQualityIssue(
+                        id: EvidenceQualityIssueID(
+                            StableHash.sha256("evidence-quality:internal-provider-leak")),
+                        sourceKey: "internal-provider-operations",
+                        code: "internal-provider-operation-reached-work",
+                        detail: "Trackify-internal provider activity reached the work projection.",
+                        count: leakedInternal, firstObservedAt: observedAt,
+                        lastObservedAt: observedAt, affectsWorkMetrics: true),
+                    at: 0)
+            }
+            return EvidenceQualitySnapshot(
+                state: allIssues.contains(where: \.affectsWorkMetrics) || unresolved > 0
+                    ? .degraded : .healthy,
+                projectionVersion: ConversationProvenance.currentClassificationVersion,
+                unresolvedRecordCount: unresolved,
+                diagnosticRecordCount: diagnostics,
+                aliasRecordCount: aliases,
+                replayRecordCount: replays,
+                issues: allIssues)
+        }
+    }
+
+    @discardableResult
+    public func refreshEvidenceQualityAudit(at observedAt: Date) throws -> EvidenceQualitySnapshot {
+        try database.write { db in
+            let missingTurn =
+                try Int.fetchOne(
+                    db,
+                    sql: """
+                        SELECT COUNT(*) FROM logical_messages
+                        WHERE disposition = 'work'
+                          AND origin IN ('human', 'agent')
+                          AND logical_turn_id IS NULL
+                          AND classification_reason != 'legacy-compatible'
+                        """) ?? 0
+            try Self.setAuditIssue(
+                db: db, code: "work-message-without-logical-turn",
+                count: missingTurn,
+                detail: "One or more work intents lack a canonical logical turn.",
+                observedAt: observedAt, affectsWorkMetrics: true)
+
+            let incompatibleOrigins =
+                try Int.fetchOne(
+                    db,
+                    sql: """
+                        SELECT COUNT(*) FROM (
+                            SELECT logical_turn_id
+                            FROM logical_messages
+                            WHERE logical_turn_id IS NOT NULL
+                              AND disposition = 'work'
+                              AND origin IN ('human', 'agent')
+                            GROUP BY logical_turn_id
+                            HAVING COUNT(DISTINCT origin) > 1
+                        )
+                        """) ?? 0
+            try Self.setAuditIssue(
+                db: db, code: "conflicting-logical-turn-origin",
+                count: incompatibleOrigins,
+                detail: "One or more logical turns have incompatible work origins.",
+                observedAt: observedAt, affectsWorkMetrics: true)
+
+            let aliasCycles =
+                try Int.fetchOne(
+                    db,
+                    sql: """
+                        WITH RECURSIVE alias_chain(start_id, current_id, depth) AS (
+                            SELECT alias_id, canonical_id, 1 FROM message_aliases
+                            UNION ALL
+                            SELECT alias_chain.start_id, message_aliases.canonical_id,
+                                   alias_chain.depth + 1
+                            FROM alias_chain
+                            JOIN message_aliases
+                              ON message_aliases.alias_id = alias_chain.current_id
+                            WHERE alias_chain.depth < 100
+                        )
+                        SELECT COUNT(DISTINCT start_id)
+                        FROM alias_chain
+                        WHERE start_id = current_id
+                        """) ?? 0
+            try Self.setAuditIssue(
+                db: db, code: "message-alias-cycle", count: aliasCycles,
+                detail: "One or more canonical message aliases form a cycle.",
+                observedAt: observedAt, affectsWorkMetrics: true)
+
+            let internalLeaks =
+                try Int.fetchOne(
+                    db,
+                    sql: """
+                        SELECT COUNT(*)
+                        FROM logical_messages
+                        WHERE disposition = 'work' AND origin = 'trackify'
+                        """) ?? 0
+            try Self.setAuditIssue(
+                db: db, code: "internal-provider-operation-reached-work",
+                count: internalLeaks,
+                detail: "Trackify-internal provider activity reached the work projection.",
+                observedAt: observedAt, affectsWorkMetrics: true)
+
+            let missingRepository =
+                try Int.fetchOne(
+                    db,
+                    sql: """
+                        SELECT COUNT(*) FROM logical_messages
+                        WHERE disposition = 'work' AND repository_id IS NULL
+                          AND classification_reason != 'legacy-compatible'
+                        """) ?? 0
+            try Self.setAuditIssue(
+                db: db, code: "work-repository-unresolved", count: missingRepository,
+                detail: "Some work evidence has no supported contemporaneous repository association.",
+                observedAt: observedAt, affectsWorkMetrics: false)
+
+            let highRatioSessions =
+                try Int.fetchOne(
+                    db,
+                    sql: """
+                        SELECT COUNT(*) FROM (
+                            SELECT session_id
+                            FROM conversation_records
+                            GROUP BY session_id
+                            HAVING COUNT(*) > 200
+                               AND COUNT(*) > 100 * CASE
+                                   WHEN COUNT(DISTINCT logical_turn_id) > 0
+                                   THEN COUNT(DISTINCT logical_turn_id)
+                                   ELSE 1 END
+                        )
+                        """) ?? 0
+            try Self.setAuditIssue(
+                db: db, code: "unusual-records-per-logical-turn",
+                count: highRatioSessions,
+                detail: "One or more sessions have an unusual source-record to logical-turn ratio.",
+                observedAt: observedAt, affectsWorkMetrics: false)
+        }
+        return try evidenceQuality()
+    }
+
+    public func beginInternalProviderOperation(
+        id: String,
+        provider: String,
+        purpose: String,
+        workingDirectory: URL,
+        startedAt: Date
+    ) throws {
+        try database.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO internal_provider_operations (
+                        id, provider, purpose, working_directory, started_at,
+                        finished_at, state)
+                    VALUES (?, ?, ?, ?, ?, NULL, 'running')
+                    """,
+                arguments: [
+                    id, provider, purpose, workingDirectory.standardizedFileURL.path,
+                    startedAt.timeIntervalSince1970,
+                ])
+        }
+    }
+
+    public func finishInternalProviderOperation(
+        id: String,
+        state: String,
+        finishedAt: Date
+    ) throws {
+        try database.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE internal_provider_operations
+                    SET state = ?, finished_at = ?
+                    WHERE id = ?
+                    """,
+                arguments: [state, finishedAt.timeIntervalSince1970, id])
+        }
+    }
+
+    private static func setAuditIssue(
+        db: Database,
+        code: String,
+        count: Int,
+        detail: String,
+        observedAt: Date,
+        affectsWorkMetrics: Bool
+    ) throws {
+        let sourceKey = "semantic-audit"
+        guard count > 0 else {
+            try db.execute(
+                sql: "DELETE FROM evidence_quality_issues WHERE source_key = ? AND code = ?",
+                arguments: [sourceKey, code])
+            return
+        }
+        let id = StableHash.sha256("evidence-quality:\(sourceKey):\(code)")
+        try db.execute(
+            sql: """
+                INSERT INTO evidence_quality_issues (
+                    id, source, source_key, code, detail, issue_count,
+                    first_observed_at, last_observed_at, affects_work_metrics)
+                VALUES (?, NULL, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(source_key, code) DO UPDATE SET
+                    detail = excluded.detail,
+                    issue_count = excluded.issue_count,
+                    last_observed_at = excluded.last_observed_at,
+                    affects_work_metrics = excluded.affects_work_metrics
+                """,
+            arguments: [
+                id, sourceKey, code, detail, count,
+                observedAt.timeIntervalSince1970,
+                observedAt.timeIntervalSince1970,
+                affectsWorkMetrics,
+            ])
     }
 
     private static func ftsExpression(_ query: String) -> String {
@@ -1611,14 +2478,52 @@ public final class LedgerStore: @unchecked Sendable {
     }
 
     private static func decodeMessage(_ row: Row) throws -> ConversationMessage {
-        ConversationMessage(
+        func string(_ name: String) -> String? {
+            guard row.columnNames.contains(name) else { return nil }
+            return row[name]
+        }
+        func bool(_ name: String) -> Bool {
+            guard row.columnNames.contains(name) else { return false }
+            return row[name] as Bool
+        }
+        func int(_ name: String) -> Int? {
+            guard row.columnNames.contains(name) else { return nil }
+            return row[name]
+        }
+        let origin = string("origin").flatMap(ConversationOrigin.init(rawValue:)) ?? .unknown
+        let semanticKind =
+            string("semantic_kind")
+            .flatMap(ConversationSemanticKind.init(rawValue:)) ?? .unknown
+        let disposition = string("disposition").flatMap(EvidenceDisposition.init(rawValue:)) ?? .work
+        let canonicalState =
+            string("canonical_state")
+            .flatMap(CanonicalRecordState.init(rawValue:)) ?? .primary
+        let logicalTurnID = string("logical_turn_id").map { LogicalTurnID($0) }
+        let logicalMessageID = string("logical_message_id").map { LogicalMessageID($0) }
+        let provenance = ConversationProvenance(
+            sourceRecordID: string("source_record_id"),
+            sourceRecordType: string("source_record_type") ?? "legacy",
+            sourceTurnID: string("source_turn_id"),
+            parentSourceRecordID: string("parent_source_record_id"),
+            sourceResponseID: string("source_response_id"),
+            entrypoint: string("entrypoint"),
+            workingDirectory: string("message_working_directory"),
+            isMeta: bool("is_meta"), isSidechain: bool("is_sidechain"),
+            origin: origin, semanticKind: semanticKind,
+            disposition: disposition, canonicalState: canonicalState,
+            classificationVersion: int("classification_version") ?? 0,
+            classificationReason: string("classification_reason") ?? "legacy-compatible",
+            logicalTurnID: logicalTurnID,
+            logicalMessageID: logicalMessageID)
+        return ConversationMessage(
             id: MessageID(row["id"] as String),
             sessionID: SessionID(row["session_id"] as String),
             sourceMessageID: row["source_message_id"],
             role: try requiredEnum(MessageRole.self, value: row["role"] as String),
             occurredAt: (row["occurred_at"] as Double?).map(Date.init(timeIntervalSince1970:)),
             normalizedText: MessageTextSanitizer.sanitize(row["normalized_text"] as String),
-            fingerprint: row["fingerprint"]
+            fingerprint: row["fingerprint"],
+            provenance: provenance
         )
     }
 

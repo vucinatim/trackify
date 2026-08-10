@@ -34,7 +34,8 @@ public struct ClaudeDesktopConversationParser: Sendable {
         lines: [Data],
         metadata: Metadata?,
         fallbackSessionID: String,
-        observedAt: Date
+        observedAt: Date,
+        previousState: ConversationParserState = ConversationParserState()
     ) throws -> ConversationParseResult {
         let transformed = try lines.map { line -> Data in
             var object = try ConversationJSON.object(line)
@@ -57,7 +58,8 @@ public struct ClaudeDesktopConversationParser: Sendable {
         return try ClaudeConversationParser().parse(
             lines: transformed,
             fallbackSessionID: metadata?.cliSessionID ?? metadata?.sessionID ?? fallbackSessionID,
-            observedAt: observedAt
+            observedAt: observedAt,
+            previousState: previousState
         )
     }
 }

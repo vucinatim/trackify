@@ -34,6 +34,13 @@ public enum ReportRunTag: Sendable {}
 public enum ArtifactTag: Sendable {}
 public enum DestinationTag: Sendable {}
 public enum DeliveryAttemptTag: Sendable {}
+public enum ReportScheduleTag: Sendable {}
+public enum SummaryTag: Sendable {}
+public enum SummaryRunTag: Sendable {}
+public enum ConversationRecordTag: Sendable {}
+public enum LogicalTurnTag: Sendable {}
+public enum LogicalMessageTag: Sendable {}
+public enum EvidenceQualityIssueTag: Sendable {}
 
 public typealias DiscoveryRootID = Identifier<DiscoveryRootTag>
 public typealias RepositoryID = Identifier<RepositoryTag>
@@ -51,3 +58,10 @@ public typealias ReportRunID = Identifier<ReportRunTag>
 public typealias ArtifactID = Identifier<ArtifactTag>
 public typealias DestinationID = Identifier<DestinationTag>
 public typealias DeliveryAttemptID = Identifier<DeliveryAttemptTag>
+public typealias ReportScheduleID = Identifier<ReportScheduleTag>
+public typealias SummaryID = Identifier<SummaryTag>
+public typealias SummaryRunID = Identifier<SummaryRunTag>
+public typealias ConversationRecordID = Identifier<ConversationRecordTag>
+public typealias LogicalTurnID = Identifier<LogicalTurnTag>
+public typealias LogicalMessageID = Identifier<LogicalMessageTag>
+public typealias EvidenceQualityIssueID = Identifier<EvidenceQualityIssueTag>

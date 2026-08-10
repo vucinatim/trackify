@@ -9,6 +9,13 @@ enum LedgerSchema {
     static let nearDuplicateMessagesMigration = "0004_near_duplicate_messages"
     static let messagePrivacyMigration = "0005_message_privacy"
     static let workIntelligenceMigration = "0006_work_intelligence"
+    static let configurableReportsMigration = "0007_configurable_reports"
+    static let reportSchedulesMigration = "0008_report_schedules"
+    static let canonicalSummariesMigration = "0009_canonical_summaries"
+    static let canonicalEvidenceMigration = "0010_canonical_evidence"
+    static let canonicalEvidenceLookupMigration = "0011_canonical_evidence_lookups"
+    static let evidenceCoverageMigration = "0012_evidence_coverage"
+    static let providerAllowanceMigration = "0013_provider_allowance_attribution"
     static let messageDuplicateTolerance = 0.5
 
     static var migrator: DatabaseMigrator {
@@ -679,6 +686,543 @@ enum LedgerSchema {
                     SELECT 'legacy:' || reports.id, value
                     FROM reports, json_each(reports.evidence_ids_json)
                     WHERE value IN (SELECT id FROM source_observations)
+                    """)
+        }
+        migrator.registerMigration(configurableReportsMigration) { db in
+            // Rebuild the run/artifact graph once to remove the V1 period-level
+            // uniqueness rule. Manual regeneration is history, not an overwrite.
+            try db.execute(
+                sql: """
+                    CREATE TABLE report_runs_new (
+                        id TEXT PRIMARY KEY NOT NULL,
+                        recipe_id TEXT NOT NULL REFERENCES report_recipes(id) ON DELETE RESTRICT,
+                        recipe_version_id TEXT NOT NULL REFERENCES report_recipe_versions(id) ON DELETE RESTRICT,
+                        period_start REAL NOT NULL, period_end REAL NOT NULL, intent TEXT NOT NULL,
+                        selection_mode TEXT NOT NULL, requested_provider TEXT, requested_model TEXT,
+                        effective_provider TEXT, effective_model TEXT, compiler_version TEXT NOT NULL,
+                        prompt_version TEXT NOT NULL, invocation_version TEXT,
+                        output_schema_version TEXT NOT NULL, configuration_json BLOB,
+                        input_bytes INTEGER, estimated_input_tokens INTEGER, input_tokens INTEGER,
+                        cached_input_tokens INTEGER, output_tokens INTEGER, reasoning_tokens INTEGER,
+                        cost_value TEXT, cost_currency TEXT, cost_kind TEXT NOT NULL,
+                        billing_context TEXT, queued_at REAL NOT NULL, started_at REAL,
+                        finished_at REAL, state TEXT NOT NULL, failure_class TEXT,
+                        failure_detail TEXT, artifact_id TEXT
+                    );
+                    INSERT INTO report_runs_new (
+                        id, recipe_id, recipe_version_id, period_start, period_end, intent,
+                        selection_mode, requested_provider, requested_model, effective_provider,
+                        effective_model, compiler_version, prompt_version, invocation_version,
+                        output_schema_version, input_bytes, estimated_input_tokens, input_tokens,
+                        cached_input_tokens, output_tokens, reasoning_tokens, cost_value,
+                        cost_currency, cost_kind, billing_context, queued_at, started_at,
+                        finished_at, state, failure_class, failure_detail, artifact_id)
+                    SELECT id, recipe_id, recipe_version_id, period_start, period_end, intent,
+                        selection_mode, requested_provider, requested_model, effective_provider,
+                        effective_model, compiler_version, prompt_version, invocation_version,
+                        output_schema_version, input_bytes, estimated_input_tokens, input_tokens,
+                        cached_input_tokens, output_tokens, reasoning_tokens, cost_value,
+                        cost_currency, cost_kind, billing_context, queued_at, started_at,
+                        finished_at, state, failure_class, failure_detail, artifact_id
+                    FROM report_runs;
+
+                    CREATE TABLE artifacts_new (
+                        id TEXT PRIMARY KEY NOT NULL, type TEXT NOT NULL, format TEXT NOT NULL,
+                        created_at REAL NOT NULL,
+                        recipe_id TEXT NOT NULL REFERENCES report_recipes(id) ON DELETE RESTRICT,
+                        recipe_version_id TEXT NOT NULL REFERENCES report_recipe_versions(id) ON DELETE RESTRICT,
+                        report_run_id TEXT REFERENCES report_runs(id) ON DELETE RESTRICT,
+                        legacy_report_id TEXT UNIQUE REFERENCES reports(id) ON DELETE CASCADE,
+                        period_start REAL NOT NULL, period_end REAL NOT NULL,
+                        repository_ids_json BLOB NOT NULL, group_names_json BLOB NOT NULL,
+                        privacy_profile TEXT NOT NULL, state TEXT NOT NULL, content TEXT NOT NULL,
+                        revision INTEGER NOT NULL,
+                        revises_artifact_id TEXT REFERENCES artifacts(id) ON DELETE RESTRICT
+                    );
+                    INSERT INTO artifacts_new SELECT * FROM artifacts;
+
+                    CREATE TEMP TABLE artifact_evidence_backup AS SELECT * FROM artifact_evidence;
+                    CREATE TEMP TABLE report_run_evidence_backup AS SELECT * FROM report_run_evidence;
+                    CREATE TEMP TABLE delivery_attempts_backup AS SELECT * FROM delivery_attempts;
+
+                    DROP TRIGGER artifacts_immutable_update;
+                    DROP TABLE delivery_attempts;
+                    DROP TABLE artifact_evidence;
+                    DROP TABLE report_run_evidence;
+                    DROP TABLE artifacts;
+                    DROP TABLE report_runs;
+                    ALTER TABLE report_runs_new RENAME TO report_runs;
+                    ALTER TABLE artifacts_new RENAME TO artifacts;
+
+                    CREATE TABLE artifact_evidence (
+                        artifact_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+                        evidence_id TEXT NOT NULL REFERENCES source_observations(id) ON DELETE RESTRICT,
+                        PRIMARY KEY(artifact_id, evidence_id)
+                    );
+                    INSERT INTO artifact_evidence SELECT * FROM artifact_evidence_backup;
+                    CREATE TABLE report_run_evidence (
+                        report_run_id TEXT NOT NULL REFERENCES report_runs(id) ON DELETE CASCADE,
+                        alias TEXT NOT NULL,
+                        evidence_id TEXT NOT NULL REFERENCES source_observations(id) ON DELETE RESTRICT,
+                        selection_reason TEXT NOT NULL,
+                        PRIMARY KEY(report_run_id, alias, evidence_id)
+                    );
+                    INSERT INTO report_run_evidence SELECT * FROM report_run_evidence_backup;
+                    CREATE TABLE delivery_attempts (
+                        id TEXT PRIMARY KEY NOT NULL,
+                        artifact_id TEXT NOT NULL REFERENCES artifacts(id) ON DELETE CASCADE,
+                        destination_id TEXT NOT NULL REFERENCES destinations(id) ON DELETE CASCADE,
+                        idempotency_key TEXT NOT NULL UNIQUE, state TEXT NOT NULL,
+                        attempted_at REAL NOT NULL, finished_at REAL, retry_count INTEGER NOT NULL,
+                        external_identifier TEXT, failure_detail TEXT
+                    );
+                    INSERT INTO delivery_attempts SELECT * FROM delivery_attempts_backup;
+
+                    CREATE INDEX report_runs_state_queue ON report_runs(state, queued_at);
+                    CREATE INDEX report_runs_finished_at ON report_runs(finished_at);
+                    CREATE INDEX artifacts_period ON artifacts(period_start, period_end);
+                    CREATE INDEX artifacts_recipe ON artifacts(recipe_id, created_at);
+                    CREATE TRIGGER artifacts_immutable_update
+                    BEFORE UPDATE ON artifacts
+                    BEGIN SELECT RAISE(ABORT, 'artifacts are immutable'); END;
+                    """)
+        }
+        migrator.registerMigration(reportSchedulesMigration) { db in
+            try db.execute(
+                sql: """
+                    CREATE TABLE report_schedules (
+                        id TEXT PRIMARY KEY NOT NULL,
+                        name TEXT NOT NULL,
+                        recipe_id TEXT NOT NULL REFERENCES report_recipes(id) ON DELETE RESTRICT,
+                        cadence TEXT NOT NULL,
+                        repository_ids_json BLOB NOT NULL,
+                        group_names_json BLOB NOT NULL,
+                        provider_mode_override TEXT,
+                        is_enabled INTEGER NOT NULL,
+                        created_at REAL NOT NULL,
+                        updated_at REAL NOT NULL
+                    );
+                    CREATE INDEX report_schedules_enabled_cadence
+                        ON report_schedules(is_enabled, cadence);
+                    ALTER TABLE report_runs ADD COLUMN schedule_id TEXT
+                        REFERENCES report_schedules(id) ON DELETE SET NULL;
+                    CREATE INDEX report_runs_schedule ON report_runs(schedule_id, queued_at);
+                    """)
+
+            let now = Date().timeIntervalSince1970
+            let instructions: [(String, String)] = [
+                (
+                    "hourly-work-note",
+                    "Summarize what changed during this hour and state clearly whether the work is complete, ongoing, blocked, or quiet."
+                ),
+                (
+                    "daily-work-summary",
+                    "Summarize outcomes, decisions, parallel projects, blockers, and clearly unfinished work from this day."
+                ),
+                (
+                    "stand-up-draft",
+                    "Write a concise stand-up update organized around completed work, work in progress, and blockers."
+                ),
+                (
+                    "timesheet-description",
+                    "Write a concise project-scoped work description suitable for a timesheet. Do not invent duration."
+                ),
+            ]
+            for (recipeID, focus) in instructions {
+                guard
+                    let version = try Int.fetchOne(
+                        db,
+                        sql: "SELECT MAX(version) FROM report_recipe_versions WHERE recipe_id = ?",
+                        arguments: [recipeID])
+                else { continue }
+                let next = version + 1
+                let versionID = "\(recipeID):v\(next)"
+                try db.execute(
+                    sql: """
+                        INSERT INTO report_recipe_versions (
+                            id, recipe_id, version, purpose, audience, cadence,
+                            repository_ids_json, group_names_json, custom_focus, tone,
+                            output_format, maximum_characters, privacy_profile,
+                            provider_mode_override, created_at)
+                        SELECT ?, recipe_id, ?, purpose, audience, cadence,
+                               repository_ids_json, group_names_json, ?, tone,
+                               output_format, maximum_characters, privacy_profile,
+                               provider_mode_override, ?
+                        FROM report_recipe_versions
+                        WHERE id = (SELECT current_version_id FROM report_recipes WHERE id = ?)
+                        """,
+                    arguments: [versionID, next, focus, now, recipeID])
+                try db.execute(
+                    sql: "UPDATE report_recipes SET current_version_id = ? WHERE id = ?",
+                    arguments: [versionID, recipeID])
+            }
+
+            try db.execute(
+                sql: """
+                    INSERT INTO report_schedules (
+                        id, name, recipe_id, cadence, repository_ids_json,
+                        group_names_json, provider_mode_override, is_enabled,
+                        created_at, updated_at)
+                    SELECT 'schedule:' || recipes.id,
+                           recipes.name,
+                           recipes.id,
+                           versions.cadence,
+                           versions.repository_ids_json,
+                           versions.group_names_json,
+                           versions.provider_mode_override,
+                           recipes.is_enabled,
+                           ?, ?
+                    FROM report_recipes AS recipes
+                    JOIN report_recipe_versions AS versions
+                      ON versions.id = recipes.current_version_id
+                    WHERE versions.cadence IN ('hourly', 'daily')
+                    """,
+                arguments: [now, now])
+        }
+        migrator.registerMigration(canonicalSummariesMigration) { db in
+            try db.execute(
+                sql: """
+                    CREATE TABLE work_summaries (
+                        id TEXT PRIMARY KEY NOT NULL,
+                        kind TEXT NOT NULL,
+                        period_start REAL NOT NULL,
+                        period_end REAL NOT NULL,
+                        generated_at REAL NOT NULL,
+                        state TEXT NOT NULL,
+                        narrative TEXT NOT NULL,
+                        content_json BLOB NOT NULL,
+                        statistics_json BLOB NOT NULL,
+                        generation_source TEXT NOT NULL,
+                        provider TEXT,
+                        model TEXT,
+                        generator_version TEXT NOT NULL,
+                        prompt_version TEXT NOT NULL,
+                        schema_version TEXT NOT NULL,
+                        source_fingerprint TEXT NOT NULL,
+                        eligible_event_count INTEGER NOT NULL,
+                        covered_event_count INTEGER NOT NULL,
+                        truncated_assistant_count INTEGER NOT NULL,
+                        chunk_count INTEGER NOT NULL,
+                        coverage_known INTEGER NOT NULL,
+                        revision INTEGER NOT NULL,
+                        revises_summary_id TEXT REFERENCES work_summaries(id) ON DELETE RESTRICT
+                    );
+
+                    CREATE INDEX work_summaries_kind_period
+                        ON work_summaries(kind, period_start, period_end, revision);
+                    CREATE INDEX work_summaries_generated
+                        ON work_summaries(generated_at DESC);
+                    CREATE INDEX work_summaries_fingerprint
+                        ON work_summaries(kind, period_start, period_end, source_fingerprint);
+
+                    CREATE TABLE summary_evidence (
+                        summary_id TEXT NOT NULL REFERENCES work_summaries(id) ON DELETE CASCADE,
+                        evidence_id TEXT NOT NULL REFERENCES source_observations(id) ON DELETE RESTRICT,
+                        PRIMARY KEY(summary_id, evidence_id)
+                    );
+
+                    CREATE TABLE summary_children (
+                        summary_id TEXT NOT NULL REFERENCES work_summaries(id) ON DELETE CASCADE,
+                        child_summary_id TEXT NOT NULL REFERENCES work_summaries(id) ON DELETE RESTRICT,
+                        ordinal INTEGER NOT NULL,
+                        PRIMARY KEY(summary_id, child_summary_id),
+                        UNIQUE(summary_id, ordinal)
+                    );
+
+                    CREATE TABLE summary_runs (
+                        id TEXT PRIMARY KEY NOT NULL,
+                        kind TEXT NOT NULL,
+                        period_start REAL NOT NULL,
+                        period_end REAL NOT NULL,
+                        selection_mode TEXT NOT NULL,
+                        requested_provider TEXT,
+                        requested_model TEXT,
+                        effective_provider TEXT,
+                        effective_model TEXT,
+                        source_fingerprint TEXT NOT NULL,
+                        input_bytes INTEGER NOT NULL,
+                        estimated_input_tokens INTEGER NOT NULL,
+                        input_tokens INTEGER,
+                        cached_input_tokens INTEGER,
+                        output_tokens INTEGER,
+                        reasoning_tokens INTEGER,
+                        cost_value TEXT,
+                        cost_currency TEXT,
+                        cost_kind TEXT NOT NULL,
+                        billing_context TEXT,
+                        queued_at REAL NOT NULL,
+                        started_at REAL,
+                        finished_at REAL,
+                        state TEXT NOT NULL,
+                        failure_class TEXT,
+                        failure_detail TEXT,
+                        summary_id TEXT REFERENCES work_summaries(id) ON DELETE SET NULL
+                    );
+
+                    CREATE INDEX summary_runs_state_queue ON summary_runs(state, queued_at);
+                    CREATE INDEX summary_runs_finished_at ON summary_runs(finished_at);
+
+                    CREATE TABLE report_run_summaries (
+                        report_run_id TEXT NOT NULL REFERENCES report_runs(id) ON DELETE CASCADE,
+                        alias TEXT NOT NULL,
+                        summary_id TEXT NOT NULL REFERENCES work_summaries(id) ON DELETE RESTRICT,
+                        PRIMARY KEY(report_run_id, alias, summary_id)
+                    );
+                    CREATE INDEX report_run_summaries_summary ON report_run_summaries(summary_id);
+
+                    CREATE TRIGGER work_summaries_immutable_update
+                    BEFORE UPDATE ON work_summaries
+                    BEGIN SELECT RAISE(ABORT, 'work summaries are immutable'); END;
+
+                    INSERT INTO work_summaries (
+                        id, kind, period_start, period_end, generated_at, state,
+                        narrative, content_json, statistics_json, generation_source,
+                        provider, model, generator_version, prompt_version,
+                        schema_version, source_fingerprint, eligible_event_count,
+                        covered_event_count, truncated_assistant_count, chunk_count,
+                        coverage_known, revision, revises_summary_id)
+                    SELECT
+                        'migrated:' || id,
+                        CASE WHEN period_end - period_start >= 72000 THEN 'day' ELSE 'segment' END,
+                        period_start, period_end, period_end, state, summary,
+                        CAST(json_object(
+                            'narrative', summary,
+                            'projects', json('[]'),
+                            'intents', json('[]'),
+                            'outcomes', json('[]'),
+                            'openWork', json('[]'),
+                            'blockers', json('[]'),
+                            'topics', json('[]')) AS BLOB),
+                        CAST(json_object(
+                            'activeHours', 0, 'llmTurns', 0,
+                            'conversationMessages', 0, 'commits', 0,
+                            'additions', 0, 'deletions', 0, 'filesChanged', 0,
+                            'repositoryIDs', json('[]'), 'evidenceCount', 0) AS BLOB),
+                        'migrated',
+                        CASE
+                            WHEN lower(provider) LIKE '%codex%' THEN 'codex'
+                            WHEN lower(provider) LIKE '%claude%' THEN 'claude'
+                            ELSE NULL
+                        END,
+                        model, generator_version,
+                        'legacy', 'work-summary-v1', 'legacy:' || id,
+                        0, 0, 0, 1, 0, revision, NULL
+                    FROM reports;
+
+                    INSERT OR IGNORE INTO summary_evidence (summary_id, evidence_id)
+                    SELECT 'migrated:' || reports.id, value
+                    FROM reports, json_each(reports.evidence_ids_json)
+                    WHERE value IN (SELECT id FROM source_observations);
+
+                    INSERT INTO search_documents (
+                        entity_type, entity_id, repository_id, occurred_at, content)
+                    SELECT 'summary', id, NULL, period_end, narrative
+                    FROM work_summaries summary
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM work_summaries newer
+                        WHERE newer.kind = summary.kind
+                          AND newer.period_start = summary.period_start
+                          AND newer.period_end = summary.period_end
+                          AND newer.revision > summary.revision
+                    );
+
+                    UPDATE report_schedules
+                    SET is_enabled = 0, updated_at = strftime('%s', 'now')
+                    WHERE id IN ('schedule:hourly-work-note', 'schedule:daily-work-summary');
+                    """)
+        }
+        migrator.registerMigration(canonicalEvidenceMigration) { db in
+            try db.execute(
+                sql: """
+                    ALTER TABLE session_messages ADD COLUMN source_record_id TEXT;
+                    ALTER TABLE session_messages ADD COLUMN source_record_type TEXT NOT NULL DEFAULT 'legacy';
+                    ALTER TABLE session_messages ADD COLUMN source_turn_id TEXT;
+                    ALTER TABLE session_messages ADD COLUMN parent_source_record_id TEXT;
+                    ALTER TABLE session_messages ADD COLUMN source_response_id TEXT;
+                    ALTER TABLE session_messages ADD COLUMN entrypoint TEXT;
+                    ALTER TABLE session_messages ADD COLUMN message_working_directory TEXT;
+                    ALTER TABLE session_messages ADD COLUMN is_meta INTEGER NOT NULL DEFAULT 0;
+                    ALTER TABLE session_messages ADD COLUMN is_sidechain INTEGER NOT NULL DEFAULT 0;
+                    ALTER TABLE session_messages ADD COLUMN origin TEXT NOT NULL DEFAULT 'unknown';
+                    ALTER TABLE session_messages ADD COLUMN semantic_kind TEXT NOT NULL DEFAULT 'unknown';
+                    ALTER TABLE session_messages ADD COLUMN disposition TEXT NOT NULL DEFAULT 'work';
+                    ALTER TABLE session_messages ADD COLUMN canonical_state TEXT NOT NULL DEFAULT 'primary';
+                    ALTER TABLE session_messages ADD COLUMN classification_version INTEGER NOT NULL DEFAULT 0;
+                    ALTER TABLE session_messages ADD COLUMN classification_reason TEXT NOT NULL DEFAULT 'legacy-compatible';
+                    ALTER TABLE session_messages ADD COLUMN logical_turn_id TEXT;
+                    ALTER TABLE session_messages ADD COLUMN logical_message_id TEXT;
+                    ALTER TABLE session_messages ADD COLUMN message_repository_id TEXT REFERENCES repositories(id) ON DELETE SET NULL;
+
+                    CREATE INDEX session_messages_logical_turn ON session_messages(logical_turn_id);
+                    CREATE INDEX session_messages_logical_message ON session_messages(logical_message_id);
+                    CREATE INDEX session_messages_disposition_time ON session_messages(disposition, occurred_at);
+
+                    CREATE TABLE logical_turns (
+                        id TEXT PRIMARY KEY NOT NULL,
+                        source TEXT NOT NULL,
+                        source_turn_id TEXT NOT NULL,
+                        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                        origin TEXT NOT NULL,
+                        started_at REAL,
+                        last_observed_at REAL,
+                        state TEXT NOT NULL DEFAULT 'unknown',
+                        repository_id TEXT REFERENCES repositories(id) ON DELETE SET NULL,
+                        repository_method TEXT,
+                        repository_confidence REAL,
+                        classification_version INTEGER NOT NULL,
+                        UNIQUE(source, source_turn_id)
+                    );
+
+                    CREATE INDEX logical_turns_time ON logical_turns(started_at, last_observed_at);
+                    CREATE INDEX logical_turns_repository ON logical_turns(repository_id, started_at);
+
+                    CREATE TABLE logical_messages (
+                        id TEXT PRIMARY KEY NOT NULL,
+                        logical_turn_id TEXT REFERENCES logical_turns(id) ON DELETE SET NULL,
+                        source TEXT NOT NULL,
+                        role TEXT NOT NULL,
+                        occurred_at REAL,
+                        normalized_text TEXT NOT NULL,
+                        text_fingerprint TEXT NOT NULL,
+                        origin TEXT NOT NULL,
+                        semantic_kind TEXT NOT NULL,
+                        disposition TEXT NOT NULL,
+                        repository_id TEXT REFERENCES repositories(id) ON DELETE SET NULL,
+                        classification_version INTEGER NOT NULL,
+                        classification_reason TEXT NOT NULL
+                    );
+
+                    CREATE INDEX logical_messages_turn ON logical_messages(logical_turn_id, occurred_at);
+                    CREATE INDEX logical_messages_disposition_time ON logical_messages(disposition, occurred_at);
+
+                    CREATE TABLE conversation_records (
+                        id TEXT PRIMARY KEY NOT NULL,
+                        source TEXT NOT NULL,
+                        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                        source_record_id TEXT,
+                        source_record_type TEXT NOT NULL,
+                        source_turn_id TEXT,
+                        parent_source_record_id TEXT,
+                        source_response_id TEXT,
+                        role TEXT,
+                        occurred_at REAL,
+                        observed_at REAL NOT NULL,
+                        normalized_text TEXT,
+                        text_fingerprint TEXT,
+                        entrypoint TEXT,
+                        working_directory TEXT,
+                        is_meta INTEGER NOT NULL,
+                        is_sidechain INTEGER NOT NULL,
+                        origin TEXT NOT NULL,
+                        semantic_kind TEXT NOT NULL,
+                        disposition TEXT NOT NULL,
+                        canonical_state TEXT NOT NULL,
+                        logical_turn_id TEXT REFERENCES logical_turns(id) ON DELETE SET NULL,
+                        logical_message_id TEXT REFERENCES logical_messages(id) ON DELETE SET NULL,
+                        repository_id TEXT REFERENCES repositories(id) ON DELETE SET NULL,
+                        classification_version INTEGER NOT NULL,
+                        classification_reason TEXT NOT NULL,
+                        adapter_version INTEGER NOT NULL
+                    );
+
+                    CREATE INDEX conversation_records_session_time
+                        ON conversation_records(session_id, occurred_at);
+                    CREATE INDEX conversation_records_turn
+                        ON conversation_records(logical_turn_id, occurred_at);
+                    CREATE INDEX conversation_records_disposition
+                        ON conversation_records(disposition, occurred_at);
+                    CREATE INDEX conversation_records_source_identity
+                        ON conversation_records(source, source_record_id);
+
+                    CREATE TABLE evidence_quality_issues (
+                        id TEXT PRIMARY KEY NOT NULL,
+                        source TEXT,
+                        source_key TEXT NOT NULL,
+                        code TEXT NOT NULL,
+                        detail TEXT NOT NULL,
+                        issue_count INTEGER NOT NULL,
+                        first_observed_at REAL NOT NULL,
+                        last_observed_at REAL NOT NULL,
+                        affects_work_metrics INTEGER NOT NULL,
+                        UNIQUE(source_key, code)
+                    );
+
+                    CREATE INDEX evidence_quality_issues_last_observed
+                        ON evidence_quality_issues(last_observed_at DESC);
+
+                    CREATE TABLE internal_provider_operations (
+                        id TEXT PRIMARY KEY NOT NULL,
+                        provider TEXT NOT NULL,
+                        purpose TEXT NOT NULL,
+                        working_directory TEXT NOT NULL,
+                        started_at REAL NOT NULL,
+                        finished_at REAL,
+                        state TEXT NOT NULL
+                    );
+
+                    INSERT INTO logical_messages (
+                        id, logical_turn_id, source, role, occurred_at,
+                        normalized_text, text_fingerprint, origin, semantic_kind,
+                        disposition, classification_version, classification_reason)
+                    SELECT session_messages.id, NULL, sessions.source,
+                           session_messages.role, session_messages.occurred_at,
+                           session_messages.normalized_text, session_messages.fingerprint,
+                           'unknown', 'unknown',
+                           'work', 0, 'legacy-compatible'
+                    FROM session_messages
+                    JOIN sessions ON sessions.id = session_messages.session_id;
+
+                    UPDATE session_messages SET logical_message_id = id;
+                    """)
+        }
+        migrator.registerMigration(canonicalEvidenceLookupMigration) { db in
+            try db.execute(
+                sql: """
+                    CREATE INDEX IF NOT EXISTS conversation_records_logical_message
+                        ON conversation_records(logical_message_id);
+                    """)
+        }
+        migrator.registerMigration(evidenceCoverageMigration) { db in
+            try db.execute(
+                sql: """
+                    CREATE TABLE evidence_ledger_coverage (
+                        id INTEGER PRIMARY KEY NOT NULL CHECK (id = 1),
+                        calendar_days INTEGER NOT NULL,
+                        coverage_start REAL NOT NULL,
+                        coverage_cutoff REAL NOT NULL,
+                        recorded_at REAL NOT NULL,
+                        canonical_fingerprint TEXT NOT NULL
+                    );
+
+                    CREATE TABLE evidence_source_read_audits (
+                        source_key TEXT PRIMARY KEY NOT NULL,
+                        unit TEXT NOT NULL,
+                        candidates_considered INTEGER NOT NULL,
+                        units_opened INTEGER NOT NULL,
+                        bytes_read INTEGER,
+                        records_observed INTEGER NOT NULL,
+                        records_accepted INTEGER NOT NULL
+                    );
+                    """)
+        }
+        migrator.registerMigration(providerAllowanceMigration) { db in
+            try db.execute(
+                sql: """
+                    CREATE TABLE provider_allowance_attributions (
+                        operation_id TEXT PRIMARY KEY NOT NULL,
+                        provider TEXT NOT NULL,
+                        purpose TEXT NOT NULL,
+                        started_at REAL NOT NULL,
+                        finished_at REAL,
+                        limit_id TEXT,
+                        window_duration_minutes INTEGER,
+                        resets_at REAL,
+                        used_percent_before INTEGER,
+                        used_percent_after INTEGER
+                    );
+
+                    CREATE INDEX provider_allowance_window
+                        ON provider_allowance_attributions(provider, resets_at, started_at);
                     """)
         }
         return migrator

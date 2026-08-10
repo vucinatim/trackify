@@ -5,6 +5,7 @@ import TrackifyDomain
 struct MenuBarView: View {
     @ObservedObject var model: AppModel
     @ObservedObject var updates: UpdateController
+    @ObservedObject var router: AppRouter
     @Environment(\.openWindow) private var openWindow
 
     var body: some View {
@@ -106,23 +107,34 @@ struct MenuBarView: View {
                 Text("Loading ledger…").foregroundStyle(.secondary)
             }
 
-            if let report = model.reports.first {
+            if let summary = model.latestCurrentSummary {
                 VStack(alignment: .leading, spacing: 7) {
                     HStack(spacing: 8) {
-                        Text("LATEST REPORT")
+                        Text("CURRENT WORK")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
                         Spacer()
-                        ReportStateLabel(state: report.state)
+                        ReportStateLabel(state: summary.state)
                     }
-                    Text(report.summary)
+                    Text(summary.content.compactNarrative)
                         .font(.callout)
-                        .lineLimit(2)
+                        .lineLimit(3)
                         .fixedSize(horizontal: false, vertical: true)
                         .textSelection(.enabled)
+                    HStack(spacing: 6) {
+                        if !summary.content.projects.isEmpty {
+                            Text(summary.content.projects.prefix(4).joined(separator: ", "))
+                                .lineLimit(1)
+                        }
+                        Spacer()
+                        Text(summary.provider?.rawValue.capitalized ?? "Local")
+                        Text("·")
+                        Text(summary.generatedAt, style: .relative)
+                    }
+                    .font(.caption2).foregroundStyle(.secondary)
                 }
             } else {
-                Text("No evidence-backed report generated today.")
+                Text("No work summary is available yet.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -157,7 +169,11 @@ struct MenuBarView: View {
                     .disabled(model.isCollecting)
 
                     Divider()
-                    SettingsLink {
+                    Button {
+                        router.selection = .settings
+                        openWindow(id: "main")
+                        NSApp.activate(ignoringOtherApps: true)
+                    } label: {
                         Label("Settings…", systemImage: "gearshape")
                     }
                     Button {

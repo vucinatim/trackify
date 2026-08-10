@@ -7,7 +7,7 @@ import TrackifyDomain
 
 @Suite("Work intelligence store")
 struct WorkIntelligenceStoreTests {
-    @Test("V1 reports migrate to immutable legacy artifacts without changing report identity")
+    @Test("V1 reports migrate to immutable artifacts and canonical summary history")
     func legacyReportMigration() throws {
         let directory = try temporaryDirectory("legacy-artifact")
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -34,10 +34,15 @@ struct WorkIntelligenceStoreTests {
         }
         let queue = try DatabaseQueue(path: databaseURL.path)
         try queue.write { db in
-            try db.execute(sql: "DELETE FROM grdb_migrations WHERE identifier = '0006_work_intelligence'")
+            try db.execute(
+                sql:
+                    "DELETE FROM grdb_migrations WHERE identifier IN ('0006_work_intelligence', '0007_configurable_reports', '0008_report_schedules', '0009_canonical_summaries')"
+            )
             for table in [
+                "report_run_summaries", "summary_runs", "summary_children", "summary_evidence",
+                "work_summaries",
                 "delivery_attempts", "destinations", "report_run_evidence", "artifact_evidence",
-                "artifacts", "report_runs", "report_recipe_versions", "report_recipes",
+                "artifacts", "report_schedules", "report_runs", "report_recipe_versions", "report_recipes",
             ] {
                 try db.execute(sql: "DROP TABLE \(table)")
             }
@@ -46,14 +51,51 @@ struct WorkIntelligenceStoreTests {
         let migrated = try LedgerStore(databaseURL: databaseURL)
         let storedReport = try migrated.report(identifier: reportID.rawValue)
         let storedArtifact = try migrated.artifact(id: ArtifactID("legacy:\(reportID.rawValue)"))
+        let storedSummary = try migrated.summary(id: SummaryID("migrated:\(reportID.rawValue)"))
         let report = try #require(storedReport)
         let artifact = try #require(storedArtifact)
+        let summary = try #require(storedSummary)
         #expect(report.id == reportID)
         #expect(report.summary == "Preserved V1 summary")
         #expect(artifact.legacyReportID == reportID)
         #expect(artifact.reportRunID == nil)
         #expect(artifact.evidenceIDs == [evidenceID])
         #expect(artifact.recipeVersionID == RecipeVersionID("legacy-v1-report:v1"))
+        #expect(summary.content.narrative == "Preserved V1 summary")
+        #expect(summary.generationSource == .migrated)
+        #expect(summary.coverage.isKnown == false)
+        #expect(summary.evidenceIDs == [evidenceID])
+        #expect(try migrated.reportSchedules(enabledOnly: true).isEmpty)
+    }
+
+    @Test("Scheduled reporters are seeded and managed independently from templates")
+    func scheduledReporterLifecycle() throws {
+        try withTemporaryStore { store in
+            let seeded = try store.reportSchedules()
+            #expect(seeded.count == 2)
+            #expect(Set(seeded.map(\.cadence)) == Set([.hourly, .daily]))
+
+            let id = ReportScheduleID("team-standup")
+            let now = Date(timeIntervalSince1970: 1_754_294_400)
+            let created = try store.saveReportSchedule(
+                id: id,
+                draft: ReportScheduleDraft(
+                    name: "Team stand-up", recipeID: RecipeID("stand-up-draft"),
+                    cadence: .daily, repositoryIDs: [RepositoryID("backend")],
+                    providerModeOverride: .claude),
+                now: now)
+            #expect(created.name == "Team stand-up")
+            #expect(created.repositoryIDs == [RepositoryID("backend")])
+            #expect(created.providerModeOverride == .claude)
+
+            try store.setReportScheduleEnabled(false, id: id, now: now.addingTimeInterval(1))
+            #expect(try store.reportSchedule(id: id)?.isEnabled == false)
+            #expect(try store.reportSchedules(enabledOnly: true).contains { $0.id == id } == false)
+
+            try store.deleteReportSchedule(id: id)
+            #expect(try store.reportSchedule(id: id) == nil)
+            #expect(try store.recipe(id: RecipeID("stand-up-draft")) != nil)
+        }
     }
 
     @Test("Recipe edits create immutable versions and reject policy-bypass instructions")

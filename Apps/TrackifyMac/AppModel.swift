@@ -23,7 +23,7 @@ struct CalendarActivity: Identifiable, Sendable {
 
 struct TimelineEntry: Identifiable, Sendable {
     enum Kind: String, Sendable {
-        case report
+        case summary
         case commit
         case conversation
         case change
@@ -46,17 +46,21 @@ final class AppModel: ObservableObject {
     @Published private(set) var dashboard: ActivityDashboard?
     @Published private(set) var repositories: [RepositoryCatalogItem] = []
     @Published private(set) var roots: [DiscoveryRoot] = []
-    @Published private(set) var reports: [WorkReport] = []
+    @Published private(set) var summaries: [WorkSummary] = []
     @Published private(set) var hours: [HourActivity] = []
     @Published private(set) var historyDays: [CalendarActivity] = []
     @Published private(set) var timeline: [TimelineEntry] = []
     @Published private(set) var providerHealth: [ProviderHealth] = []
     @Published private(set) var sourceCapabilities: [SourceCapability] = []
+    @Published private(set) var evidenceQuality = EvidenceQualitySnapshot(
+        state: .healthy, projectionVersion: ConversationProvenance.currentClassificationVersion,
+        unresolvedRecordCount: 0, diagnosticRecordCount: 0,
+        aliasRecordCount: 0, replayRecordCount: 0, issues: [])
     @Published private(set) var generationCapabilities: [GenerationCapability] = []
     @Published private(set) var providerSelection: ProviderSelectionMode = .automatic
     @Published private(set) var effectiveProvider: SummaryProviderID?
     @Published private(set) var generationBudgets = GenerationBudgets()
-    @Published private(set) var scheduledModelReportsEnabled = true
+    @Published private(set) var automaticSummariesUseLLM = true
     @Published private(set) var usageToday = UsageSummary(
         runs: 0, succeeded: 0, failed: 0, inputTokens: 0, cachedInputTokens: 0,
         outputTokens: 0, reasoningTokens: 0, durationSeconds: 0, knownCost: 0,
@@ -65,8 +69,15 @@ final class AppModel: ObservableObject {
         runs: 0, succeeded: 0, failed: 0, inputTokens: 0, cachedInputTokens: 0,
         outputTokens: 0, reasoningTokens: 0, durationSeconds: 0, knownCost: 0,
         currency: nil, hasUnknownCost: false)
+    @Published private(set) var generationBudgetStatus = GenerationBudgetStatus(
+        allowance: nil, allowanceAttributedPercent: 0, allowancePercentLimit: 3,
+        estimatedCreditsUsed: 0, weeklyCreditLimit: 500,
+        callsToday: 0, callsPerDayLimit: 30, isPaused: false, pauseReason: nil)
     @Published private(set) var reportRuns: [ReportRun] = []
+    @Published private(set) var summaryRuns: [SummaryRun] = []
     @Published private(set) var recipes: [ReportRecipe] = []
+    @Published private(set) var reportTemplates: [ReportTemplate] = []
+    @Published private(set) var reportSchedules: [ReportSchedule] = []
     @Published private(set) var artifacts: [Artifact] = []
     @Published private(set) var isSummarizing = false
     @Published private(set) var isCollecting = false
@@ -81,6 +92,8 @@ final class AppModel: ObservableObject {
     private let clock: any WallClock
     private var schedulerTask: Task<Void, Never>?
     private var hasInitializedOverviewPresentation = false
+    private var observedGenerationConfiguration: GenerationConfiguration?
+    private var observedBudgetPaused: Bool?
 
     init(
         environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -102,13 +115,20 @@ final class AppModel: ObservableObject {
     var latestEvidenceAt: Date? { dashboard?.activity.lastEvidenceAt }
     var degradedMessage: String? {
         errorMessage
+            ?? (evidenceQuality.state == .degraded
+                ? "Evidence quality is degraded; some visible statistics may be incomplete. Open Settings > Sources or run trackify doctor."
+                : nil)
             ?? (collectorIssueCount > 0
-                ? "Collection has \(collectorIssueCount) source or report issue\(collectorIssueCount == 1 ? "" : "s"). Run trackify doctor for details."
+                ? "Collection has \(collectorIssueCount) source, summary, or report issue\(collectorIssueCount == 1 ? "" : "s"). Run trackify doctor for details."
                 : nil)
     }
 
     var llmBudgetPaused: Bool {
-        reportRuns.first?.failureClass == .budget && reportRuns.first?.state == .fallback
+        Self.liveBudgetIsPaused(generationBudgetStatus)
+    }
+
+    nonisolated static func liveBudgetIsPaused(_ status: GenerationBudgetStatus) -> Bool {
+        status.isPaused
     }
 
     var menuBarEvidenceHours: String? { dashboard.map { "\($0.activity.activeHours)h" } }
@@ -121,6 +141,17 @@ final class AppModel: ObservableObject {
 
     var activeRepositoryNames: [String] {
         repositoryNames(for: Set(dashboard?.activity.repositoryIDs ?? []))
+    }
+
+    var latestCurrentSummary: WorkSummary? {
+        let today = Calendar.current.dateInterval(of: .day, for: referenceNow)
+        let todaySummaries = summaries.filter { summary in
+            today.map { summary.periodEnd > $0.start && summary.periodStart < $0.end } ?? false
+        }
+        return todaySummaries.filter { $0.kind == .current }
+            .max { $0.generatedAt < $1.generatedAt }
+            ?? todaySummaries.filter { $0.kind == .day }
+            .max { $0.generatedAt < $1.generatedAt }
     }
 
     deinit { schedulerTask?.cancel() }
@@ -137,7 +168,7 @@ final class AppModel: ObservableObject {
         await refresh()
         guard !isUIValidation else { return }
         schedulerTask = Task { [weak self] in
-            await self?.generateReportsNow()
+            await self?.generateSummariesAndReportsNow()
             await self?.refresh()
             await self?.collectNow()
             while !Task.isCancelled {
@@ -172,10 +203,11 @@ final class AppModel: ObservableObject {
                     CalendarActivity(date: $0.0.start, activity: $0.1)
                 }
 
-                let hours = try Self.hourActivity(store: store, day: day, cutoff: now)
+                let hours = try Self.hourActivity(store: store, range: day, cutoff: now)
 
-                let reportRange = DateInterval(start: historyStart, end: day.end)
-                let reports = try store.reports(overlapping: reportRange).sorted { $0.periodStart > $1.periodStart }
+                let summaryRange = DateInterval(start: historyStart, end: day.end)
+                let summaries = try store.summaries(
+                    overlapping: summaryRange, kinds: [.current, .day, .segment], limit: 1_000)
                 let repositoryCatalog = try store.repositoryCatalog()
                 let events = try store.recentEvents(
                     from: historyStart,
@@ -187,7 +219,8 @@ final class AppModel: ObservableObject {
                     event.payload["messageID"].map { MessageID($0) }
                 }
                 let messageByID = try store.messagesResolvingAliases(ids: Array(messageIDs.prefix(500)))
-                let timeline = Self.makeTimeline(events: events, reports: reports, messages: messageByID)
+                let timeline = Self.makeTimeline(
+                    events: events, summaries: summaries, messages: messageByID)
                 let calendar = Calendar.current
                 let today = calendar.dateInterval(of: .day, for: now)!
                 let month = calendar.dateInterval(of: .month, for: now)!
@@ -200,71 +233,115 @@ final class AppModel: ObservableObject {
                     uiValidation
                     ? Self.validationSourceCapabilities(now: now)
                     : discovery.sources(store: store, now: now)
+                let effectiveProvider = discovery.effectiveProvider(
+                    mode: settings.providerSelection,
+                    capabilities: generators ?? cachedGenerationCapabilities)
+                let allowanceReader: any ProviderAllowanceReading =
+                    uiValidation ? NoProviderAllowanceReader() : AutomaticProviderAllowanceReader()
+                let budgetStatus = try GenerationBudgetController(
+                    allowanceReader: allowanceReader
+                ).status(
+                    store: store, budgets: settings.generationBudgets,
+                    provider: effectiveProvider, now: now)
 
                 return AppSnapshot(
                     dashboard: dashboard,
                     repositories: repositoryCatalog,
                     roots: try store.discoveryRoots(),
-                    reports: reports,
+                    summaries: summaries,
                     hours: hours,
                     historyDays: historyDays,
                     timeline: timeline,
                     providerHealth: inspectProviders ? SummaryProviderFactory.health() : nil,
                     sourceCapabilities: sources,
+                    evidenceQuality: try store.evidenceQuality(),
                     generationCapabilities: generators,
                     providerSelection: settings.providerSelection,
-                    effectiveProvider: discovery.effectiveProvider(
-                        mode: settings.providerSelection,
-                        capabilities: generators ?? cachedGenerationCapabilities),
+                    effectiveProvider: effectiveProvider,
                     generationBudgets: settings.generationBudgets,
-                    scheduledModelReportsEnabled: settings.scheduledModelReportsEnabled,
+                    automaticSummariesUseLLM: settings.automaticSummariesUseLLM,
                     usageToday: try store.usage(from: today.start, through: today.end),
                     usageMonth: try store.usage(from: month.start, through: month.end),
+                    generationBudgetStatus: budgetStatus,
                     reportRuns: try store.reportRuns(limit: 50),
-                    recipes: try store.recipes(), artifacts: try store.artifacts(limit: 50),
+                    summaryRuns: try store.summaryRuns(limit: 50),
+                    recipes: try store.recipes(), reportTemplates: try store.reportTemplates(),
+                    reportSchedules: try store.reportSchedules(),
+                    artifacts: try store.artifacts(limit: 100),
                     collectorIssueCount: collectorStatus.issueCount,
                     collectionPaused: settings.collectionPaused,
                     automaticUpdateChecks: settings.automaticUpdateChecks
                 )
             }.value
+            let nextGenerationConfiguration = GenerationConfiguration(snapshot: snapshot)
+            let generationConfigurationChanged =
+                observedGenerationConfiguration != nil
+                && observedGenerationConfiguration != nextGenerationConfiguration
+            observedGenerationConfiguration = nextGenerationConfiguration
+            let budgetRecovered =
+                observedBudgetPaused == true && !snapshot.generationBudgetStatus.isPaused
+            observedBudgetPaused = snapshot.generationBudgetStatus.isPaused
             dashboard = snapshot.dashboard
             repositories = snapshot.repositories
             roots = snapshot.roots
-            reports = snapshot.reports
+            summaries = snapshot.summaries
             hours = snapshot.hours
             historyDays = snapshot.historyDays
             timeline = snapshot.timeline
             if let health = snapshot.providerHealth { providerHealth = health }
             sourceCapabilities = snapshot.sourceCapabilities
+            evidenceQuality = snapshot.evidenceQuality
             if let capabilities = snapshot.generationCapabilities {
                 generationCapabilities = capabilities
             }
             providerSelection = snapshot.providerSelection
             effectiveProvider = snapshot.effectiveProvider
             generationBudgets = snapshot.generationBudgets
-            scheduledModelReportsEnabled = snapshot.scheduledModelReportsEnabled
+            automaticSummariesUseLLM = snapshot.automaticSummariesUseLLM
             usageToday = snapshot.usageToday
             usageMonth = snapshot.usageMonth
+            generationBudgetStatus = snapshot.generationBudgetStatus
             reportRuns = snapshot.reportRuns
+            summaryRuns = snapshot.summaryRuns
             recipes = snapshot.recipes
+            reportTemplates = snapshot.reportTemplates
+            reportSchedules = snapshot.reportSchedules
             artifacts = snapshot.artifacts
             collectorIssueCount = snapshot.collectorIssueCount
             collectionPaused = snapshot.collectionPaused
             automaticUpdateChecks = snapshot.automaticUpdateChecks
             errorMessage = nil
+            if generationConfigurationChanged || budgetRecovered,
+                !isUIValidation,
+                snapshot.automaticSummariesUseLLM,
+                snapshot.effectiveProvider != nil,
+                !snapshot.generationBudgetStatus.isPaused
+            {
+                Task { [weak self] in
+                    await self?.generateSummariesAndReportsNow()
+                }
+            }
         } catch {
             errorMessage = String(describing: error)
         }
     }
 
     func hourActivity(for date: Date) async -> [HourActivity] {
+        let day = Self.day(containing: date)
+        return await hourActivity(from: day.start, through: day.end)
+    }
+
+    func hourActivity(from start: Date, through end: Date) async -> [HourActivity] {
         do {
             let cutoff = referenceNow
             return try await Task.detached(priority: .utility) {
                 let paths = try TrackifyPaths.default()
                 let store = try LedgerStore(databaseURL: paths.ledgerURL)
-                let day = Self.day(containing: date)
-                return try Self.hourActivity(store: store, day: day, cutoff: min(cutoff, day.end))
+                return try Self.hourActivity(
+                    store: store,
+                    range: DateInterval(start: start, end: end),
+                    cutoff: min(cutoff, end)
+                )
             }.value
         } catch {
             errorMessage = "Hourly activity could not be loaded: \(error)"
@@ -300,7 +377,7 @@ final class AppModel: ObservableObject {
             if issueCount != nil { lastCollection = referenceNow }
             isCollecting = false
             await refresh()
-            Task { [weak self] in await self?.generateReportsNow() }
+            Task { [weak self] in await self?.generateSummariesAndReportsNow() }
         } catch LocalCollectionError.collectionAlreadyRunning {
             isCollecting = false
             errorMessage = nil
@@ -311,28 +388,183 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func generateReportsNow() async {
+    func generateSummariesAndReportsNow() async {
         guard !isUIValidation, !isSummarizing else { return }
         isSummarizing = true
         defer { isSummarizing = false }
         do {
             let now = referenceNow
-            let result = try await Task.detached(priority: .utility) { () -> ReportQueueResult in
+            let issues = try await Task.detached(priority: .utility) { () -> [String] in
                 let paths = try TrackifyPaths.default()
                 let store = try LedgerStore(databaseURL: paths.ledgerURL)
                 let settings = try SettingsStore(fileURL: paths.settingsURL).load()
+                let summaries = await SummaryCoordinator().refresh(
+                    store: store, settings: settings, now: now)
                 let queue = ReportQueue()
                 let enqueued = try queue.enqueueDueReports(
                     store: store, settings: settings, now: now)
                 let drained = await queue.drain(store: store, settings: settings)
-                return ReportQueueResult(
-                    enqueued: enqueued.enqueued, completed: drained.completed,
-                    issues: enqueued.issues + drained.issues)
+                return summaries.issues + enqueued.issues + drained.issues
             }.value
-            if let issue = result.issues.first { errorMessage = issue }
+            if let issue = issues.first { errorMessage = issue }
             await refresh()
         } catch {
-            errorMessage = "Reports could not be generated: \(error)"
+            errorMessage = "Summaries or reports could not be generated: \(error)"
+        }
+    }
+
+    func previewReport(
+        recipeID: RecipeID,
+        period: DateInterval,
+        configuration: ReportRunConfiguration
+    ) async -> ReportGenerationPreview? {
+        do {
+            let cutoff = referenceNow
+            return try await Task.detached(priority: .utility) {
+                let paths = try TrackifyPaths.default()
+                let store = try LedgerStore(databaseURL: paths.ledgerURL)
+                let settings = try SettingsStore(fileURL: paths.settingsURL).load()
+                return try ReportQueue().preview(
+                    store: store, settings: settings, recipeID: recipeID,
+                    period: period, cutoff: cutoff, configuration: configuration)
+            }.value
+        } catch {
+            errorMessage = "Report preview could not be prepared: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    @discardableResult
+    func generateReport(
+        recipeID: RecipeID,
+        period: DateInterval,
+        configuration: ReportRunConfiguration
+    ) async -> ArtifactID? {
+        guard !isSummarizing else { return nil }
+        isSummarizing = true
+        defer { isSummarizing = false }
+        do {
+            let now = referenceNow
+            let artifactID = try await Task.detached(priority: .userInitiated) { () async throws -> ArtifactID? in
+                let paths = try TrackifyPaths.default()
+                let store = try LedgerStore(databaseURL: paths.ledgerURL)
+                let settings = try SettingsStore(fileURL: paths.settingsURL).load()
+                let queue = ReportQueue()
+                let run = try queue.enqueueOnDemand(
+                    store: store, settings: settings, recipeID: recipeID,
+                    period: period, now: now, configuration: configuration)
+                _ = await queue.drain(store: store, settings: settings, maximumRuns: 1)
+                return try store.reportRun(id: run.id)?.artifactID
+            }.value
+            await refresh()
+            return artifactID
+        } catch {
+            errorMessage = "Report could not be generated: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    func saveTemplate(id: RecipeID, draft: ReportTemplateDraft) async -> Bool {
+        do {
+            let now = referenceNow
+            try await Task.detached(priority: .utility) {
+                let paths = try TrackifyPaths.default()
+                let store = try LedgerStore(databaseURL: paths.ledgerURL)
+                _ = try store.createRecipeVersion(
+                    recipeID: id, name: draft.name, purpose: draft.purpose,
+                    audience: draft.audience, cadence: draft.cadence,
+                    repositoryIDs: draft.repositoryIDs, groupNames: draft.groupNames,
+                    customFocus: draft.customFocus, tone: draft.tone,
+                    outputFormat: draft.outputFormat,
+                    maximumCharacters: draft.maximumCharacters,
+                    privacyProfile: draft.privacyProfile,
+                    providerModeOverride: draft.providerModeOverride, now: now)
+            }.value
+            await refresh()
+            return true
+        } catch {
+            errorMessage = "Template could not be saved: \(error.localizedDescription)"
+            return false
+        }
+    }
+
+    func duplicateTemplate(_ template: ReportTemplate, name: String? = nil) async -> RecipeID? {
+        let base = Self.slug(name ?? "\(template.recipe.name) Copy")
+        let existing = Set(reportTemplates.map { $0.id.rawValue })
+        var value = base
+        var suffix = 2
+        while existing.contains(value) {
+            value = "\(base)-\(suffix)"
+            suffix += 1
+        }
+        let id = RecipeID(value)
+        var draft = ReportTemplateDraft(template: template, name: name ?? "\(template.recipe.name) Copy")
+        draft.cadence = .onDemand
+        return await saveTemplate(id: id, draft: draft) ? id : nil
+    }
+
+    func createTemplate(_ draft: ReportTemplateDraft) async -> RecipeID? {
+        let base = Self.slug(draft.name)
+        guard !base.isEmpty else {
+            errorMessage = "Template name must contain at least one letter or number."
+            return nil
+        }
+        let existing = Set(reportTemplates.map { $0.id.rawValue })
+        var value = base
+        var suffix = 2
+        while existing.contains(value) {
+            value = "\(base)-\(suffix)"
+            suffix += 1
+        }
+        let id = RecipeID(value)
+        return await saveTemplate(id: id, draft: draft) ? id : nil
+    }
+
+    func setTemplateEnabled(_ enabled: Bool, id: RecipeID) async {
+        do {
+            let paths = try TrackifyPaths.default()
+            try LedgerStore(databaseURL: paths.ledgerURL).setRecipeEnabled(enabled, id: id)
+            await refresh()
+        } catch { errorMessage = "Template state could not be saved: \(error.localizedDescription)" }
+    }
+
+    func saveSchedule(id: ReportScheduleID?, draft: ReportScheduleDraft) async -> ReportScheduleID? {
+        do {
+            let scheduleID = id ?? ReportScheduleID.random()
+            let now = referenceNow
+            try await Task.detached(priority: .utility) {
+                let paths = try TrackifyPaths.default()
+                let store = try LedgerStore(databaseURL: paths.ledgerURL)
+                _ = try store.saveReportSchedule(id: scheduleID, draft: draft, now: now)
+            }.value
+            await refresh()
+            return scheduleID
+        } catch {
+            errorMessage = "Scheduled reporter could not be saved: \(error.localizedDescription)"
+            return nil
+        }
+    }
+
+    func setScheduleEnabled(_ enabled: Bool, id: ReportScheduleID) async {
+        do {
+            let paths = try TrackifyPaths.default()
+            try LedgerStore(databaseURL: paths.ledgerURL).setReportScheduleEnabled(
+                enabled, id: id, now: referenceNow)
+            await refresh()
+        } catch {
+            errorMessage = "Scheduled reporter state could not be saved: \(error.localizedDescription)"
+        }
+    }
+
+    func deleteSchedule(id: ReportScheduleID) async -> Bool {
+        do {
+            let paths = try TrackifyPaths.default()
+            try LedgerStore(databaseURL: paths.ledgerURL).deleteReportSchedule(id: id)
+            await refresh()
+            return true
+        } catch {
+            errorMessage = "Scheduled reporter could not be removed: \(error.localizedDescription)"
+            return false
         }
     }
 
@@ -348,33 +580,36 @@ final class AppModel: ObservableObject {
             let store = SettingsStore(fileURL: paths.settingsURL)
             var settings = try store.load()
             settings.providerSelection = mode
-            settings.summaryProvider = mode.explicitProvider
             try store.save(settings)
             providerSelection = mode
             effectiveProvider = CapabilityDiscovery().effectiveProvider(
                 mode: mode, capabilities: generationCapabilities)
+            await refresh()
         } catch { errorMessage = "Provider preference could not be saved: \(error)" }
     }
 
-    func setScheduledModelReportsEnabled(_ enabled: Bool) async {
+    func setAutomaticSummariesUseLLM(_ enabled: Bool) async {
         do {
             let paths = try TrackifyPaths.default()
             let store = SettingsStore(fileURL: paths.settingsURL)
             var settings = try store.load()
-            settings.scheduledModelReportsEnabled = enabled
+            settings.automaticSummariesUseLLM = enabled
             try store.save(settings)
-            scheduledModelReportsEnabled = enabled
+            automaticSummariesUseLLM = enabled
+            await refresh()
         } catch { errorMessage = "Summary preference could not be saved: \(error)" }
     }
 
     func saveGenerationBudgets(_ budgets: GenerationBudgets) async {
         do {
+            let budgets = budgets.normalized()
             let paths = try TrackifyPaths.default()
             let store = SettingsStore(fileURL: paths.settingsURL)
             var settings = try store.load()
             settings.generationBudgets = budgets
             try store.save(settings)
             generationBudgets = budgets
+            await refresh()
         } catch { errorMessage = "Generation budgets could not be saved: \(error)" }
     }
 
@@ -396,9 +631,9 @@ final class AppModel: ObservableObject {
         } catch { errorMessage = "Provider test failed: \(error)" }
     }
 
-    func reports(on date: Date) -> [WorkReport] {
+    func summaries(on date: Date) -> [WorkSummary] {
         let day = Self.day(containing: date)
-        return reports.filter { $0.periodStart >= day.start && $0.periodStart < day.end }
+        return summaries.filter { $0.periodStart >= day.start && $0.periodStart < day.end }
     }
 
     func repositoryName(_ id: RepositoryID?) -> String? {
@@ -476,7 +711,7 @@ final class AppModel: ObservableObject {
     }
 
     private nonisolated static func makeTimeline(
-        events: [LedgerEvent], reports: [WorkReport], messages: [MessageID: ConversationMessage]
+        events: [LedgerEvent], summaries: [WorkSummary], messages: [MessageID: ConversationMessage]
     ) -> [TimelineEntry] {
         var seenMessages: Set<MessageID> = []
         let eventEntries = events.compactMap { event -> TimelineEntry? in
@@ -494,10 +729,13 @@ final class AppModel: ObservableObject {
                 case .user, .assistant: break
                 case .system: return nil
                 }
+                guard let workText = ConversationMessageVisibility.workText(message) else {
+                    return nil
+                }
                 guard seenMessages.insert(message.id).inserted else { return nil }
                 return TimelineEntry(
                     id: event.id.rawValue, occurredAt: event.occurredAt, kind: .conversation,
-                    title: message.normalizedText, detail: nil, repositoryID: event.repositoryID,
+                    title: workText, detail: nil, repositoryID: event.repositoryID,
                     source: event.source, state: event.state?.rawValue, messageRole: message.role)
             case .gitWorkingTreeChanged:
                 return TimelineEntry(
@@ -516,13 +754,17 @@ final class AppModel: ObservableObject {
                 return nil
             }
         }
-        let reportEntries = reports.map {
-            TimelineEntry(
-                id: $0.id.rawValue, occurredAt: $0.periodStart, kind: .report,
-                title: $0.summary, detail: "\($0.evidenceIDs.count) evidence records",
-                repositoryID: nil, source: nil, state: $0.state.rawValue, messageRole: nil)
-        }
-        return (eventEntries + reportEntries).sorted {
+        let summaryEntries =
+            summaries
+            .filter { $0.kind == .segment }
+            .map {
+                TimelineEntry(
+                    id: $0.id.rawValue, occurredAt: $0.periodEnd, kind: .summary,
+                    title: $0.content.compactNarrative,
+                    detail: "\($0.coverage.coveredEventCount) covered events",
+                    repositoryID: nil, source: nil, state: $0.state.rawValue, messageRole: nil)
+            }
+        return (eventEntries + summaryEntries).sorted {
             if $0.occurredAt == $1.occurredAt { return $0.id > $1.id }
             return $0.occurredAt > $1.occurredAt
         }
@@ -547,13 +789,17 @@ final class AppModel: ObservableObject {
 
     private nonisolated static func hourActivity(
         store: LedgerStore,
-        day: DateInterval,
+        range: DateInterval,
         cutoff: Date
     ) throws -> [HourActivity] {
-        let ranges = (0..<24).map { hour -> DateInterval in
-            let start = Calendar.current.date(byAdding: .hour, value: hour, to: day.start)!
-            let end = min(Calendar.current.date(byAdding: .hour, value: 1, to: start)!, day.end)
-            return DateInterval(start: start, end: end)
+        var ranges: [DateInterval] = []
+        var cursor = range.start
+        while cursor < range.end {
+            guard let next = Calendar.current.date(byAdding: .hour, value: 1, to: cursor), next > cursor else {
+                break
+            }
+            ranges.append(DateInterval(start: cursor, end: min(next, range.end)))
+            cursor = next
         }
         let snapshots = try ActivityQueries().snapshots(
             store: store,
@@ -571,6 +817,13 @@ final class AppModel: ObservableObject {
 
     private nonisolated static func parseISO8601(_ value: String) -> Date? {
         ISO8601DateFormatter().date(from: value)
+    }
+
+    private nonisolated static func slug(_ value: String) -> String {
+        let allowed = value.lowercased().unicodeScalars.map { scalar -> Character in
+            CharacterSet.alphanumerics.contains(scalar) ? Character(String(scalar)) : "-"
+        }
+        return String(allowed).split(separator: "-").filter { !$0.isEmpty }.joined(separator: "-")
     }
 
     private nonisolated static func validationGenerationCapabilities(now: Date) -> [GenerationCapability] {
@@ -625,23 +878,40 @@ private struct AppSnapshot: Sendable {
     let dashboard: ActivityDashboard
     let repositories: [RepositoryCatalogItem]
     let roots: [DiscoveryRoot]
-    let reports: [WorkReport]
+    let summaries: [WorkSummary]
     let hours: [HourActivity]
     let historyDays: [CalendarActivity]
     let timeline: [TimelineEntry]
     let providerHealth: [ProviderHealth]?
     let sourceCapabilities: [SourceCapability]
+    let evidenceQuality: EvidenceQualitySnapshot
     let generationCapabilities: [GenerationCapability]?
     let providerSelection: ProviderSelectionMode
     let effectiveProvider: SummaryProviderID?
     let generationBudgets: GenerationBudgets
-    let scheduledModelReportsEnabled: Bool
+    let automaticSummariesUseLLM: Bool
     let usageToday: UsageSummary
     let usageMonth: UsageSummary
+    let generationBudgetStatus: GenerationBudgetStatus
     let reportRuns: [ReportRun]
+    let summaryRuns: [SummaryRun]
     let recipes: [ReportRecipe]
+    let reportTemplates: [ReportTemplate]
+    let reportSchedules: [ReportSchedule]
     let artifacts: [Artifact]
     let collectorIssueCount: Int
     let collectionPaused: Bool
     let automaticUpdateChecks: Bool
+}
+
+private struct GenerationConfiguration: Equatable {
+    let providerSelection: String
+    let automaticSummariesUseLLM: Bool
+    let budgets: GenerationBudgets
+
+    init(snapshot: AppSnapshot) {
+        providerSelection = snapshot.providerSelection.rawValue
+        automaticSummariesUseLLM = snapshot.automaticSummariesUseLLM
+        budgets = snapshot.generationBudgets
+    }
 }
