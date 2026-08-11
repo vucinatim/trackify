@@ -46,23 +46,36 @@ public struct ConversationDirectorySource: SourceAdapter {
     private let reader: JSONLReader
     private let maximumRecordsPerCollection: Int
     private let maximumBytesPerCollection: Int
+    private let includedFiles: Set<String>?
 
     public init(
         provider: ConversationProvider,
         root: URL,
         cursorScope: String? = nil,
+        includedFiles: Set<URL>? = nil,
         reader: JSONLReader = JSONLReader(skipOversizedLines: true),
         maximumRecordsPerCollection: Int = 64,
         maximumBytesPerCollection: Int = 1 * 1_024 * 1_024
     ) {
         precondition(maximumRecordsPerCollection > 0)
         precondition(maximumBytesPerCollection > 0)
+        let standardizedRoot = root.standardizedFileURL
         self.provider = provider
-        self.root = root.standardizedFileURL
+        self.root = standardizedRoot
         self.reader = reader
         self.maximumRecordsPerCollection = maximumRecordsPerCollection
         self.maximumBytesPerCollection = maximumBytesPerCollection
-        let base = "\(provider.rawValue)-directory:\(self.root.path)"
+        self.includedFiles = includedFiles.map { files in
+            Set(
+                files.compactMap { file in
+                    let standardized = file.standardizedFileURL
+                    guard Self.isDescendant(standardized, of: standardizedRoot),
+                        standardized.pathExtension.lowercased() == "jsonl"
+                    else { return nil }
+                    return standardized.path
+                })
+        }
+        let base = "\(provider.rawValue)-directory:\(standardizedRoot.path)"
         baseSourceKey = base
         sourceKey = cursorScope.map { "\(base):\($0)" } ?? base
     }
@@ -108,9 +121,11 @@ public struct ConversationDirectorySource: SourceAdapter {
             directoryCursor = ConversationDirectoryCursor()
         }
         let files = try jsonlFiles(overlapping: request.range)
-        let currentKeys = Set(files.map(relativePath))
-        directoryCursor.files = directoryCursor.files.filter { currentKeys.contains($0.key) }
-        directoryCursor.parserStates = directoryCursor.parserStates.filter { currentKeys.contains($0.key) }
+        if includedFiles == nil {
+            let currentKeys = Set(files.map(relativePath))
+            directoryCursor.files = directoryCursor.files.filter { currentKeys.contains($0.key) }
+            directoryCursor.parserStates = directoryCursor.parserStates.filter { currentKeys.contains($0.key) }
+        }
         var sessions: [ConversationSession] = []
         var messages: [ConversationMessage] = []
         var conversationRecords: [NormalizedConversationRecord] = []
@@ -236,6 +251,28 @@ public struct ConversationDirectorySource: SourceAdapter {
             .isSymbolicLinkKey,
             .contentModificationDateKey,
         ]
+        if let includedFiles {
+            return includedFiles.compactMap { path -> (url: URL, modifiedAt: Date)? in
+                let url = URL(filePath: path).standardizedFileURL
+                guard FileManager.default.fileExists(atPath: url.path),
+                    let values = try? url.resourceValues(
+                        forKeys: [.isRegularFileKey, .isSymbolicLinkKey, .contentModificationDateKey]),
+                    values.isRegularFile == true,
+                    values.isSymbolicLink != true
+                else { return nil }
+                return (url, values.contentModificationDate ?? .distantPast)
+            }.filter { file in
+                guard let range else { return true }
+                guard file.modifiedAt >= range.start else { return false }
+                guard provider == .codex, let startedAt = codexFileStartDate(file.url) else { return true }
+                return startedAt < range.end
+            }.sorted {
+                $0.modifiedAt == $1.modifiedAt
+                    ? $0.url.path < $1.url.path
+                    : $0.modifiedAt > $1.modifiedAt
+            }.map(\.url)
+        }
+
         guard
             let enumerator = FileManager.default.enumerator(
                 at: root,
@@ -261,6 +298,10 @@ public struct ConversationDirectorySource: SourceAdapter {
                 ? $0.url.path < $1.url.path
                 : $0.modifiedAt > $1.modifiedAt
         }.map(\.url)
+    }
+
+    private static func isDescendant(_ candidate: URL, of root: URL) -> Bool {
+        candidate.path == root.path || candidate.path.hasPrefix(root.path + "/")
     }
 
     private func codexFileStartDate(_ file: URL) -> Date? {

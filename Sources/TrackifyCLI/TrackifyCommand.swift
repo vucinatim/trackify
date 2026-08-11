@@ -318,10 +318,37 @@ public struct CollectionControl: ParsableCommand {
         public init() {}
         public func run() throws {
             let paused = try storeOptions.makeSettingsStore().load().collectionPaused
+            let store = try storeOptions.makeStore()
+            let live = try store.liveCollectorStatus()
+            let recordedReconciliation = try store.heartbeatObservedAt(service: "reconciliation")
+            let collectorObservedAt = try store.collectorStatus().observedAt
+            let lastFullReconciliation = recordedReconciliation ?? collectorObservedAt
             if outputOptions.json {
-                try JSONOutput.write(CollectionStatePayload(paused: paused))
+                try JSONOutput.write(
+                    CollectionStatePayload(
+                        paused: paused, live: live,
+                        lastFullReconciliation: lastFullReconciliation))
             } else {
                 print(paused ? "Collection is paused." : "Collection is running.")
+                if let live {
+                    print("Live collector: \(live.mode.rawValue)")
+                    print("Pending: \(live.pendingTriggerCount) triggers, \(live.pendingPathCount) paths")
+                    if let lastMutationAt = live.lastMutationAt {
+                        print("Last mutation: \(DateParsing.iso8601(lastMutationAt))")
+                    }
+                    if let latency = live.lastLatencySeconds {
+                        print("Last convergence: \(String(format: "%.3f", latency)) seconds")
+                    }
+                    if let latency = live.p95LatencySeconds {
+                        print("P95 convergence: \(String(format: "%.3f", latency)) seconds")
+                    }
+                    if let error = live.lastError { print("Last error: \(error)") }
+                } else {
+                    print("Live collector: not started")
+                }
+                if let lastFullReconciliation {
+                    print("Last full reconciliation: \(DateParsing.iso8601(lastFullReconciliation))")
+                }
             }
         }
     }
@@ -329,19 +356,22 @@ public struct CollectionControl: ParsableCommand {
     public struct Pause: ParsableCommand {
         @OptionGroup var storeOptions: StoreOptions
         public init() {}
-        public func run() throws { try set(true, store: storeOptions.makeSettingsStore()) }
+        public func run() throws { try set(true, options: storeOptions) }
     }
 
     public struct Resume: ParsableCommand {
         @OptionGroup var storeOptions: StoreOptions
         public init() {}
-        public func run() throws { try set(false, store: storeOptions.makeSettingsStore()) }
+        public func run() throws { try set(false, options: storeOptions) }
     }
 
-    private static func set(_ paused: Bool, store: SettingsStore) throws {
+    private static func set(_ paused: Bool, options: StoreOptions) throws {
+        let paths = try options.makePaths()
+        let store = SettingsStore(fileURL: paths.settingsURL)
         var settings = try store.load()
         settings.collectionPaused = paused
         try store.save(settings)
+        TrackifyChangeSignal.post(for: paths.ledgerURL, kind: .settings)
         print(paused ? "Paused passive collection." : "Resumed passive collection.")
     }
 }
@@ -2640,15 +2670,19 @@ public struct Simulate: AsyncParsableCommand {
 }
 
 private struct StatusPayload: Encodable {
-    let schemaVersion = 1
+    let schemaVersion = 2
     let state: DiagnosticState
     let databasePath: String
     let counts: LedgerCounts
+    let liveCollector: LiveCollectorRuntimeStatus?
+    let lastFullReconciliation: Date?
 
     init(report: DiagnosticReport) {
         state = report.state
         databasePath = report.databasePath
         counts = report.counts
+        liveCollector = report.liveCollector
+        lastFullReconciliation = report.lastFullReconciliation
     }
 }
 
@@ -2707,8 +2741,10 @@ private struct CollectionPayload: Encodable {
 }
 
 private struct CollectionStatePayload: Encodable {
-    let schemaVersion = 1
+    let schemaVersion = 2
     let paused: Bool
+    let live: LiveCollectorRuntimeStatus?
+    let lastFullReconciliation: Date?
 }
 
 private struct ActivityPayload: Encodable {

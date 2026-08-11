@@ -46,7 +46,7 @@ struct MainWindow: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
-        .task { await model.start() }
+        .task { await model.refresh() }
     }
 }
 
@@ -1515,7 +1515,7 @@ struct SettingsView: View {
                         set: { value in Task { await model.setCollectionPaused(value) } }))
                 LabeledContent("Reconciliation", value: "Every 30 minutes")
                 LabeledContent("Evidence", value: "Local only")
-                Button("Sync now") { Task { await model.collectNow() } }.disabled(model.isCollecting)
+                Button("Sync now") { Task { await model.collectNow() } }.disabled(model.isAnyCollectionActive)
             }
             SwiftUI.Section("Updates") {
                 Toggle(
@@ -1547,7 +1547,8 @@ struct SettingsView: View {
     private var collectionStatus: String {
         if model.collectionPaused { return "Paused" }
         if model.degradedMessage != nil { return "Needs attention" }
-        if model.isCollecting { return "Syncing" }
+        if model.isRecordingPending { return "Recording" }
+        if model.isAnyCollectionActive { return "Syncing" }
         return "Up to date"
     }
 }

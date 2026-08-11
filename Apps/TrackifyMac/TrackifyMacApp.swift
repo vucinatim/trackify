@@ -3,9 +3,11 @@ import SwiftUI
 
 @main
 struct TrackifyMacApp: App {
-    @StateObject private var model = AppModel()
+    @NSApplicationDelegateAdaptor(TrackifyApplicationDelegate.self) private var appDelegate
     @StateObject private var updates = UpdateController()
     @StateObject private var router = AppRouter()
+
+    private var model: AppModel { appDelegate.model }
 
     var body: some Scene {
         MenuBarExtra {
@@ -158,10 +160,22 @@ private struct MenuBarLabel: View {
         }
         .accessibilityLabel(accessibilityLabel)
         .task {
-            await model.start()
             guard model.isUIValidation else { return }
             openWindow(id: "main")
             NSApp.activate(ignoringOtherApps: true)
         }
+    }
+}
+
+@MainActor
+private final class TrackifyApplicationDelegate: NSObject, NSApplicationDelegate {
+    let model = AppModel()
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        Task { await model.start() }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        model.stop()
     }
 }

@@ -87,13 +87,21 @@ final class AppModel: ObservableObject {
     @Published private(set) var launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
     @Published private(set) var collectionPaused = false
     @Published private(set) var automaticUpdateChecks = true
+    @Published private(set) var liveCollectorStatus = LiveCollectorRuntimeStatus(mode: .stopped)
 
     let isUIValidation: Bool
     private let clock: any WallClock
     private var schedulerTask: Task<Void, Never>?
+    private var isStarting = false
+    private var liveCollectionRuntime: AppLiveCollectionRuntime?
+    private var isRefreshingEvidence = false
+    private var evidenceRefreshPending = false
+    private var presentationLastRefreshedAt: Date?
+    private var hasLoadedFullPresentation = false
     private var hasInitializedOverviewPresentation = false
     private var observedGenerationConfiguration: GenerationConfiguration?
     private var observedBudgetPaused: Bool?
+    private var lastFullReconciliation: Date?
 
     init(
         environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -115,6 +123,9 @@ final class AppModel: ObservableObject {
     var latestEvidenceAt: Date? { dashboard?.activity.lastEvidenceAt }
     var degradedMessage: String? {
         errorMessage
+            ?? (liveCollectorStatus.mode == .degraded
+                ? liveCollectorStatus.lastError ?? "Live collection is degraded. Run trackify doctor for details."
+                : nil)
             ?? (evidenceQuality.state == .degraded
                 ? "Evidence quality is degraded; some visible statistics may be incomplete. Open Settings > Sources or run trackify doctor."
                 : nil)
@@ -125,6 +136,14 @@ final class AppModel: ObservableObject {
 
     var llmBudgetPaused: Bool {
         Self.liveBudgetIsPaused(generationBudgetStatus)
+    }
+
+    var isAnyCollectionActive: Bool {
+        isCollecting || liveCollectorStatus.mode == .collecting
+    }
+
+    var isRecordingPending: Bool {
+        liveCollectorStatus.mode == .pending
     }
 
     nonisolated static func liveBudgetIsPaused(_ status: GenerationBudgetStatus) -> Bool {
@@ -154,7 +173,16 @@ final class AppModel: ObservableObject {
             .max { $0.generatedAt < $1.generatedAt }
     }
 
-    deinit { schedulerTask?.cancel() }
+    deinit {
+        schedulerTask?.cancel()
+    }
+
+    func stop() {
+        schedulerTask?.cancel()
+        schedulerTask = nil
+        liveCollectionRuntime?.stop()
+        liveCollectionRuntime = nil
+    }
 
     func claimInitialOverviewPresentation() -> Bool {
         guard !hasInitializedOverviewPresentation else { return false }
@@ -163,22 +191,171 @@ final class AppModel: ObservableObject {
     }
 
     func start() async {
-        guard schedulerTask == nil else { return }
+        guard schedulerTask == nil, !isStarting else { return }
+        isStarting = true
+        defer { isStarting = false }
         if !isUIValidation { configureLoginItemIfNeeded() }
-        await refresh()
-        guard !isUIValidation else { return }
+        if !isUIValidation {
+            do {
+                let startup = try await Task.detached(priority: .utility) {
+                    let paths = try TrackifyPaths.default()
+                    let store = try LedgerStore(databaseURL: paths.ledgerURL)
+                    let reconciliation = try store.heartbeatObservedAt(service: "reconciliation")
+                    let collector = try store.collectorStatus().observedAt
+                    return (
+                        paused: try SettingsStore(fileURL: paths.settingsURL).load().collectionPaused,
+                        lastFullReconciliation: reconciliation ?? collector
+                    )
+                }.value
+                collectionPaused = startup.paused
+                lastFullReconciliation = startup.lastFullReconciliation
+            } catch {
+                errorMessage = "Collection settings could not be loaded: \(error.localizedDescription)"
+            }
+            await startLiveCollection()
+        }
+        if isUIValidation {
+            await refresh()
+            return
+        }
+        await refreshEvidence()
+        let launchedAt = referenceNow
         schedulerTask = Task { [weak self] in
-            await self?.generateSummariesAndReportsNow()
-            await self?.refresh()
-            await self?.collectNow()
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(30))
                 guard !Task.isCancelled else { return }
-                await self?.refresh()
-                if self?.referenceNow.timeIntervalSince(self?.lastCollection ?? .distantPast) ?? 0 >= 30 * 60 {
-                    await self?.collectNow()
+                await self?.reloadCollectionSettings()
+                await self?.refreshEvidenceIfChanged()
+                guard let self else { return }
+                let hasPassedStartupGrace = self.referenceNow.timeIntervalSince(launchedAt) >= 60
+                if hasPassedStartupGrace,
+                    self.referenceNow.timeIntervalSince(self.lastFullReconciliation ?? .distantPast) >= 30 * 60
+                {
+                    await self.collectNow()
                 }
             }
+        }
+    }
+
+    func refreshEvidence() async {
+        if isRefreshingEvidence {
+            evidenceRefreshPending = true
+            return
+        }
+        isRefreshingEvidence = true
+        repeat {
+            evidenceRefreshPending = false
+            do {
+                let now = referenceNow
+                let loadDetailedHistory = hasLoadedFullPresentation
+                let snapshot = try await Task.detached(priority: .utility) { () -> EvidenceAppSnapshot in
+                    let paths = try TrackifyPaths.default()
+                    let store = try LedgerStore(databaseURL: paths.ledgerURL)
+                    let day = Self.day(containing: now)
+                    let dashboard = try ActivityQueries().dashboard(store: store, range: day, cutoff: now)
+                    let hours = try Self.hourActivity(store: store, range: day, cutoff: now)
+                    let historyStart =
+                        loadDetailedHistory
+                        ? Calendar.current.date(byAdding: .day, value: -41, to: day.start)!
+                        : day.start
+                    let summaries = try store.summaries(
+                        overlapping: DateInterval(start: historyStart, end: day.end),
+                        kinds: [.current, .day, .segment], limit: loadDetailedHistory ? 1_000 : 20)
+                    let repositories = try store.repositoryCatalog()
+                    let events =
+                        loadDetailedHistory
+                        ? try store.recentEvents(
+                            from: historyStart, through: now,
+                            kinds: [
+                                .gitCommitObserved, .gitWorkingTreeChanged,
+                                .agentMessageObserved, .testFinished,
+                            ],
+                            limit: 500)
+                        : []
+                    let messageIDs = events.compactMap { event in
+                        event.payload["messageID"].map { MessageID($0) }
+                    }
+                    let messages = try store.messagesResolvingAliases(ids: Array(messageIDs.prefix(500)))
+                    let collectorStatus = try store.collectorStatus()
+                    return EvidenceAppSnapshot(
+                        dashboard: dashboard,
+                        repositories: repositories,
+                        summaries: summaries,
+                        hours: hours,
+                        currentDay: CalendarActivity(date: day.start, activity: dashboard.activity),
+                        timeline: Self.makeTimeline(events: events, summaries: summaries, messages: messages),
+                        evidenceQuality: try store.evidenceQuality(),
+                        collectorIssueCount: collectorStatus.issueCount,
+                        lastCollection: collectorStatus.observedAt)
+                }.value
+                dashboard = snapshot.dashboard
+                repositories = snapshot.repositories
+                summaries = snapshot.summaries
+                hours = snapshot.hours
+                timeline = snapshot.timeline
+                evidenceQuality = snapshot.evidenceQuality
+                collectorIssueCount = snapshot.collectorIssueCount
+                lastCollection = snapshot.lastCollection
+                presentationLastRefreshedAt = now
+                if let index = historyDays.firstIndex(where: {
+                    Calendar.current.isDate($0.date, inSameDayAs: snapshot.currentDay.date)
+                }) {
+                    historyDays[index] = snapshot.currentDay
+                } else {
+                    historyDays.append(snapshot.currentDay)
+                    historyDays.sort { $0.date < $1.date }
+                }
+                errorMessage = nil
+            } catch {
+                errorMessage = String(describing: error)
+            }
+        } while evidenceRefreshPending
+        isRefreshingEvidence = false
+    }
+
+    func applyLiveCollectorStatus(_ status: LiveCollectorRuntimeStatus) {
+        liveCollectorStatus = status
+    }
+
+    func refreshEvidenceIfChanged() async {
+        do {
+            let latestMutation = try await Task.detached(priority: .utility) { () -> Date? in
+                let paths = try TrackifyPaths.default()
+                let store = try LedgerStore(databaseURL: paths.ledgerURL)
+                return [
+                    try store.liveCollectorStatus()?.lastMutationAt,
+                    try store.collectorStatus().observedAt,
+                ].compactMap { $0 }.max()
+            }.value
+            guard let latestMutation,
+                latestMutation > (presentationLastRefreshedAt ?? .distantPast)
+            else { return }
+            await refreshEvidence()
+        } catch {
+            errorMessage = "Evidence freshness could not be checked: \(error.localizedDescription)"
+        }
+    }
+
+    func reloadCollectionSettings() async {
+        do {
+            let paused = try await Task.detached(priority: .utility) {
+                let paths = try TrackifyPaths.default()
+                return try SettingsStore(fileURL: paths.settingsURL).load().collectionPaused
+            }.value
+            collectionPaused = paused
+            liveCollectionRuntime?.setPaused(paused)
+        } catch {
+            errorMessage = "Collection settings could not be reloaded: \(error.localizedDescription)"
+        }
+    }
+
+    private func startLiveCollection() async {
+        guard liveCollectionRuntime == nil, !isUIValidation else { return }
+        do {
+            liveCollectionRuntime = try await AppLiveCollectionRuntime.start(
+                model: self, clock: clock, paused: collectionPaused)
+        } catch {
+            errorMessage = "Live collection could not start: \(error.localizedDescription)"
         }
     }
 
@@ -311,6 +488,8 @@ final class AppModel: ObservableObject {
             collectionPaused = snapshot.collectionPaused
             automaticUpdateChecks = snapshot.automaticUpdateChecks
             errorMessage = nil
+            presentationLastRefreshedAt = now
+            hasLoadedFullPresentation = true
             if generationConfigurationChanged || budgetRecovered,
                 !isUIValidation,
                 snapshot.automaticSummariesUseLLM,
@@ -374,14 +553,17 @@ final class AppModel: ObservableObject {
                     observedAt: now, state: issues.isEmpty ? "healthy" : "degraded")
                 return issues.count
             }.value
-            if issueCount != nil { lastCollection = referenceNow }
+            if issueCount != nil {
+                lastCollection = referenceNow
+                lastFullReconciliation = referenceNow
+            }
             isCollecting = false
-            await refresh()
+            await refreshAfterBackgroundMutation()
             Task { [weak self] in await self?.generateSummariesAndReportsNow() }
         } catch LocalCollectionError.collectionAlreadyRunning {
             isCollecting = false
             errorMessage = nil
-            await refresh()
+            await refreshAfterBackgroundMutation()
         } catch {
             isCollecting = false
             errorMessage = String(describing: error)
@@ -407,9 +589,17 @@ final class AppModel: ObservableObject {
                 return summaries.issues + enqueued.issues + drained.issues
             }.value
             if let issue = issues.first { errorMessage = issue }
-            await refresh()
+            await refreshAfterBackgroundMutation()
         } catch {
             errorMessage = "Summaries or reports could not be generated: \(error)"
+        }
+    }
+
+    private func refreshAfterBackgroundMutation() async {
+        if hasLoadedFullPresentation {
+            await refresh()
+        } else {
+            await refreshEvidence()
         }
     }
 
@@ -653,6 +843,7 @@ final class AppModel: ObservableObject {
             settings.collectionPaused = paused
             try store.save(settings)
             collectionPaused = paused
+            liveCollectionRuntime?.setPaused(paused)
         } catch { errorMessage = String(describing: error) }
     }
 
@@ -902,6 +1093,18 @@ private struct AppSnapshot: Sendable {
     let collectorIssueCount: Int
     let collectionPaused: Bool
     let automaticUpdateChecks: Bool
+}
+
+private struct EvidenceAppSnapshot: Sendable {
+    let dashboard: ActivityDashboard
+    let repositories: [RepositoryCatalogItem]
+    let summaries: [WorkSummary]
+    let hours: [HourActivity]
+    let currentDay: CalendarActivity
+    let timeline: [TimelineEntry]
+    let evidenceQuality: EvidenceQualitySnapshot
+    let collectorIssueCount: Int
+    let lastCollection: Date?
 }
 
 private struct GenerationConfiguration: Equatable {

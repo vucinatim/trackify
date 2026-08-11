@@ -14,7 +14,7 @@
 
 These are deliberate post-V1 improvements, not hidden release blockers. Add them only when real usage demonstrates the need.
 
-1. The event-driven collection work has been promoted from an optional follow-up to the planned [Goal 5 specification](docs/GOAL_5_LIVE_EVIDENCE.md). Periodic reconciliation remains the recovery authority.
+1. Goal 5 event-driven collection is implemented. Keep periodic reconciliation as the recovery authority, and add finer persisted hourly rollups only if longer real-world profiling proves the bounded presentation queries—not collection—to be the bottleneck.
 2. Persist hourly/daily rollups only if a real ledger makes the current bounded batch queries perceptibly slow. Migration 1 reserves the cache tables, while the query API remains authoritative, so this does not require UI or CLI changes.
 3. Add a versioned local app-control endpoint only when agents genuinely need remote pause/update operations. V1 intentionally avoids an always-listening IPC surface.
 4. Add cooperative cancellation tied to app shutdown if real provider runs need it. V1 already enforces process deadlines, terminates the exact child, drains output concurrently, and bounds captured bytes.

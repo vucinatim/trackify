@@ -40,16 +40,24 @@ public struct GitSourceAdapter: SourceAdapter {
     private let root: URL
     private let discovery: RepositoryDiscovery
     private let git: GitClient
+    private let includedRepositories: [URL]?
 
     public init(
         root: URL,
         discoveryRootID: DiscoveryRootID? = nil,
         excludedPaths: Set<String> = [],
+        includedRepositories: Set<URL>? = nil,
         discovery: RepositoryDiscovery = RepositoryDiscovery(),
         git: GitClient = GitClient()
     ) {
-        self.root = root.standardizedFileURL
-        sourceKey = "git:\(self.root.path)"
+        let standardizedRoot = root.standardizedFileURL
+        self.root = standardizedRoot
+        self.includedRepositories = includedRepositories.map { repositories in
+            repositories.map(\.standardizedFileURL)
+                .filter { $0.path == standardizedRoot.path || $0.path.hasPrefix(standardizedRoot.path + "/") }
+                .sorted { $0.path < $1.path }
+        }
+        sourceKey = "git:\(standardizedRoot.path)"
         self.discoveryRootID = discoveryRootID
         self.discovery =
             excludedPaths.isEmpty
@@ -79,7 +87,10 @@ public struct GitSourceAdapter: SourceAdapter {
         } else {
             commitRange = nil
         }
-        let candidates = try discovery.discover(under: root)
+        let candidates =
+            try includedRepositories.map {
+                $0.map { RepositoryCandidate(path: $0, kind: .regular) }
+            } ?? discovery.discover(under: root)
         var repositories: [CollectedRepository] = []
         var commits: [GitCommit] = []
         var reachableCommitHashesByRepository: [RepositoryID: Set<String>] = [:]

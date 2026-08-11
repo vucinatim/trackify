@@ -7,15 +7,18 @@ public struct GitCollectionRoot: Equatable, Sendable {
     public let path: URL
     public let discoveryRootID: DiscoveryRootID?
     public let excludedPaths: Set<String>
+    public let includedRepositories: Set<URL>?
 
     public init(
         path: URL,
         discoveryRootID: DiscoveryRootID? = nil,
-        excludedPaths: Set<String> = []
+        excludedPaths: Set<String> = [],
+        includedRepositories: Set<URL>? = nil
     ) {
         self.path = path.standardizedFileURL
         self.discoveryRootID = discoveryRootID
         self.excludedPaths = excludedPaths
+        self.includedRepositories = includedRepositories
     }
 }
 
@@ -71,6 +74,11 @@ public enum LocalCollectionError: Error, Equatable, LocalizedError {
     }
 }
 
+public enum CollectionMaintenanceScope: Sendable, Equatable {
+    case allSources
+    case touchedSources
+}
+
 public struct LocalCollectionCoordinator: Sendable {
     private let clock: any WallClock
     private let maximumBatchesPerSource: Int
@@ -91,6 +99,10 @@ public struct LocalCollectionCoordinator: Sendable {
         includeClaude: Bool = true,
         range: DateInterval? = nil,
         hookInboxURL: URL? = nil,
+        codexFiles: Set<URL>? = nil,
+        claudeFiles: Set<URL>? = nil,
+        claudeDesktopFiles: Set<URL>? = nil,
+        maintenanceScope: CollectionMaintenanceScope = .allSources,
         homeDirectory: URL = FileManager.default.homeDirectoryForCurrentUser
     ) async throws -> LocalCollectionResult {
         let ownerID = "cli:\(ProcessInfo.processInfo.processIdentifier):\(UUID().uuidString)"
@@ -121,7 +133,8 @@ public struct LocalCollectionCoordinator: Sendable {
             let source = GitSourceAdapter(
                 root: root.path,
                 discoveryRootID: root.discoveryRootID,
-                excludedPaths: root.excludedPaths
+                excludedPaths: root.excludedPaths,
+                includedRepositories: root.includedRepositories
             )
             await collectOne(sourceKey: source.sourceKey, issues: &issues) {
                 summaries.append(try await engine.collect(from: source, range: range))
@@ -137,7 +150,10 @@ public struct LocalCollectionCoordinator: Sendable {
                 let source = ConversationDirectorySource(
                     provider: .codex,
                     root: root,
-                    cursorScope: range.map(Self.backfillCursorScope)
+                    cursorScope: range.map(Self.backfillCursorScope),
+                    includedFiles: codexFiles.map { files in
+                        Set(files.filter { $0.path == root.path || $0.path.hasPrefix(root.path + "/") })
+                    }
                 )
                 await collectOne(sourceKey: source.sourceKey, issues: &issues) {
                     try await drain(source, engine: engine, range: range, summaries: &summaries, store: store, ownerID: ownerID)
@@ -146,18 +162,20 @@ public struct LocalCollectionCoordinator: Sendable {
         }
 
         if includeClaude {
-            let roots: [(ConversationProvider, URL)] = [
-                (.claude, homeDirectory.appending(path: ".claude/projects")),
+            let roots: [(ConversationProvider, URL, Set<URL>?)] = [
+                (.claude, homeDirectory.appending(path: ".claude/projects"), claudeFiles),
                 (
                     .claudeDesktop,
-                    homeDirectory.appending(path: "Library/Application Support/Claude/local-agent-mode-sessions")
+                    homeDirectory.appending(path: "Library/Application Support/Claude/local-agent-mode-sessions"),
+                    claudeDesktopFiles
                 ),
             ]
-            for (provider, root) in roots where FileManager.default.fileExists(atPath: root.path) {
+            for (provider, root, includedFiles) in roots where FileManager.default.fileExists(atPath: root.path) {
                 let source = ConversationDirectorySource(
                     provider: provider,
                     root: root,
-                    cursorScope: range.map(Self.backfillCursorScope)
+                    cursorScope: range.map(Self.backfillCursorScope),
+                    includedFiles: includedFiles
                 )
                 await collectOne(sourceKey: source.sourceKey, issues: &issues) {
                     try await drain(source, engine: engine, range: range, summaries: &summaries, store: store, ownerID: ownerID)
@@ -165,15 +183,38 @@ public struct LocalCollectionCoordinator: Sendable {
             }
         }
 
-        try store.replaceCollectorIssues(issues.map { ($0.sourceKey, $0.message) }, at: clock.now())
+        let issueRows = issues.map { ($0.sourceKey, $0.message) }
+        switch maintenanceScope {
+        case .allSources:
+            try store.replaceCollectorIssues(issueRows, at: clock.now())
+        case .touchedSources:
+            let sourceKeys = Set(summaries.map(\.sourceKey)).union(issues.map(\.sourceKey))
+            try store.replaceCollectorIssues(
+                issueRows, forSourceKeys: sourceKeys, at: clock.now())
+        }
+        let heartbeatService = maintenanceScope == .allSources ? "collector" : "live-collector"
         try store.recordHeartbeat(
-            service: "collector",
+            service: heartbeatService,
             processID: ProcessInfo.processInfo.processIdentifier,
             observedAt: clock.now(),
             state: issues.isEmpty ? "healthy" : "degraded"
         )
-        _ = try store.refreshEvidenceQualityAudit(at: clock.now())
-        return try LocalCollectionResult(summaries: summaries, issues: issues, counts: store.counts())
+        if maintenanceScope == .allSources {
+            try store.recordHeartbeat(
+                service: "reconciliation",
+                processID: ProcessInfo.processInfo.processIdentifier,
+                observedAt: clock.now(),
+                state: issues.isEmpty ? "healthy" : "degraded"
+            )
+        }
+        if maintenanceScope == .allSources {
+            _ = try store.refreshEvidenceQualityAudit(at: clock.now())
+        }
+        let result = try LocalCollectionResult(summaries: summaries, issues: issues, counts: store.counts())
+        if summaries.contains(where: { $0.insertedEvents > 0 || $0.insertedObservations > 0 }) {
+            TrackifyChangeSignal.post(for: store.databaseURL, kind: .ledger)
+        }
+        return result
     }
 
     private func drain(

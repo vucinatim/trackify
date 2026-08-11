@@ -7,6 +7,39 @@ import TrackifyDomain
 
 @Suite("Ledger store")
 struct LedgerStoreTests {
+    @Test("Live collector status round-trips without watched path content")
+    func liveCollectorStatus() throws {
+        try withTemporaryStore { store in
+            let now = Date(timeIntervalSince1970: 1_785_888_000)
+            let status = LiveCollectorRuntimeStatus(
+                mode: .collecting,
+                pendingTriggerCount: 12,
+                pendingPathCount: 4,
+                lastTriggerAt: now.addingTimeInterval(-2),
+                lastCollectionStartedAt: now.addingTimeInterval(-1),
+                lastMutationAt: now.addingTimeInterval(-30),
+                lastLatencySeconds: 1.25,
+                consecutiveFailures: 0)
+            try store.recordLiveCollectorStatus(status, at: now)
+
+            #expect(try store.liveCollectorStatus() == status)
+
+            try store.recordHeartbeat(
+                service: "reconciliation", processID: 42,
+                observedAt: now, state: "healthy")
+            #expect(try store.heartbeatObservedAt(service: "reconciliation") == now)
+            #expect(try store.heartbeatObservedAt(service: "missing") == nil)
+
+            try store.replaceCollectorIssues(
+                [(sourceKey: "codex", message: "old"), (sourceKey: "git", message: "keep")],
+                at: now)
+            try store.replaceCollectorIssues(
+                [(sourceKey: "codex", message: "new")],
+                forSourceKeys: ["codex"], at: now.addingTimeInterval(1))
+            #expect(try store.collectorStatus().issueCount == 2)
+        }
+    }
+
     @Test("A ledger snapshot is consistent, private, and never overwrites an export")
     func ledgerExport() throws {
         try withTemporaryStore { store in
@@ -331,6 +364,7 @@ struct LedgerStoreTests {
                         "0008_report_schedules", "0009_canonical_summaries",
                         "0010_canonical_evidence", "0011_canonical_evidence_lookups",
                         "0012_evidence_coverage", "0013_provider_allowance_attribution",
+                        "0014_live_collector_status",
                     ])
             #expect(try store.counts() == LedgerCounts(repositories: 0, commits: 0, sessions: 0, messages: 0, events: 0, observations: 0))
             #expect(try store.health().integrity == "ok")

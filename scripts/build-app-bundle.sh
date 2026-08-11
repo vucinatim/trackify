@@ -7,6 +7,7 @@ build_number="${TRACKIFY_BUILD_NUMBER:-1}"
 public_key="${TRACKIFY_SPARKLE_PUBLIC_KEY:-UNCONFIGURED}"
 installation_origin="${TRACKIFY_INSTALLATION_ORIGIN:-development}"
 architectures="${TRACKIFY_ARCHITECTURES:-universal}"
+development_signing_identity="${TRACKIFY_DEVELOPMENT_SIGNING_IDENTITY:--}"
 output_root="${1:-${project_root}/.build/bundle}"
 app_path="${output_root}/Trackify.app"
 
@@ -73,10 +74,10 @@ sed \
 chmod 755 "${staging_app}/Contents/MacOS/TrackifyMac" "${staging_app}/Contents/SharedSupport/trackify"
 
 if [[ "${installation_origin}" == "development" ]]; then
-  codesign --force --sign - --identifier com.zoulabs.trackify.cli "${staging_app}/Contents/SharedSupport/trackify"
+  codesign --force --sign "${development_signing_identity}" --identifier com.zoulabs.trackify.cli "${staging_app}/Contents/SharedSupport/trackify"
   codesign \
     --force \
-    --sign - \
+    --sign "${development_signing_identity}" \
     --entitlements "${project_root}/Apps/TrackifyMac/Trackify.entitlements" \
     "${staging_app}"
   codesign --verify --deep --strict "${staging_app}"

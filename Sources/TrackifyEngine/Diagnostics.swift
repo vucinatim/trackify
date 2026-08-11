@@ -16,6 +16,8 @@ public struct DiagnosticReport: Codable, Equatable, Sendable {
     public let health: LedgerHealth
     public let evidence: EvidenceQualitySnapshot
     public let coverage: EvidenceLedgerCoverage?
+    public let liveCollector: LiveCollectorRuntimeStatus?
+    public let lastFullReconciliation: Date?
     public let problems: [String]
     public let warnings: [String]
 
@@ -27,6 +29,8 @@ public struct DiagnosticReport: Codable, Equatable, Sendable {
         health: LedgerHealth,
         evidence: EvidenceQualitySnapshot,
         coverage: EvidenceLedgerCoverage?,
+        liveCollector: LiveCollectorRuntimeStatus?,
+        lastFullReconciliation: Date?,
         problems: [String],
         warnings: [String]
     ) {
@@ -37,6 +41,8 @@ public struct DiagnosticReport: Codable, Equatable, Sendable {
         self.health = health
         self.evidence = evidence
         self.coverage = coverage
+        self.liveCollector = liveCollector
+        self.lastFullReconciliation = lastFullReconciliation
         self.problems = problems
         self.warnings = warnings
     }
@@ -51,6 +57,9 @@ public struct Doctor {
         let health = try store.health()
         let evidence = try store.refreshEvidenceQualityAudit(at: now)
         let coverage = try store.evidenceCoverage()
+        let liveCollector = try store.liveCollectorStatus()
+        let recordedReconciliation = try store.heartbeatObservedAt(service: "reconciliation")
+        let lastFullReconciliation = recordedReconciliation ?? health.collectorObservedAt
         var problems: [String] = []
         var warnings: [String] = []
 
@@ -69,6 +78,32 @@ public struct Doctor {
             contentsOf: evidence.issues.filter { !$0.affectsWorkMetrics }.map {
                 "Evidence \($0.code): \($0.detail) (\($0.count))"
             })
+        if let liveCollector {
+            if liveCollector.mode == .degraded {
+                problems.append(
+                    liveCollector.lastError
+                        ?? "Live collection is degraded; restart Trackify or inspect source diagnostics.")
+            }
+            if liveCollector.mode == .pending,
+                let lastTriggerAt = liveCollector.lastTriggerAt,
+                now.timeIntervalSince(lastTriggerAt) > 60
+            {
+                problems.append("Live collection has pending evidence older than one minute.")
+            }
+            if liveCollector.mode == .collecting,
+                let startedAt = liveCollector.lastCollectionStartedAt,
+                now.timeIntervalSince(startedAt) > 15 * 60
+            {
+                problems.append("Live collection has remained active for more than fifteen minutes.")
+            }
+        } else {
+            warnings.append("The live collector has not recorded status yet; open Trackify to start it.")
+        }
+        if let lastFullReconciliation,
+            now.timeIntervalSince(lastFullReconciliation) > 60 * 60
+        {
+            warnings.append("The last full evidence reconciliation is more than one hour old.")
+        }
 
         return DiagnosticReport(
             state: health.integrity == "ok" ? (problems.isEmpty ? .healthy : .degraded) : .failed,
@@ -78,6 +113,8 @@ public struct Doctor {
             health: health,
             evidence: evidence,
             coverage: coverage,
+            liveCollector: liveCollector,
+            lastFullReconciliation: lastFullReconciliation,
             problems: problems,
             warnings: warnings
         )

@@ -1,7 +1,7 @@
 # Trackify Goal 5: Live Evidence and Responsive UI
 
-Status: Planned
-Last updated: 2026-08-10
+Status: Implemented and locally validated
+Last updated: 2026-08-11
 
 Goal 5 makes Trackify feel continuously current without changing what counts as
 work. Supported Git, Codex, and Claude evidence should move the visible current
@@ -54,7 +54,7 @@ Goal 5 targets human-perceived responsiveness, not hard realtime guarantees.
 | Codex/Claude cache append | ledger within 5 s | next reconciliation |
 | Git commit/ref/index change | ledger within 5 s | next reconciliation |
 | Working-tree transition | ledger within 10 s | next reconciliation |
-| Ledger mutation to visible UI | within 1 s | next 5 s fallback refresh |
+| Ledger mutation to visible UI | within 1 s | next 30 s fallback refresh |
 | Current-time chart marker | every minute | next UI clock tick |
 | Wake from sleep | converged within 30 s | next reconciliation |
 | Notification overflow/drop | bounded reconciliation immediately | periodic reconciliation |
@@ -330,8 +330,9 @@ not collection, are the actual bottleneck.
 - `Up to date` returns only after the dirty queue drains.
 - Historical views do not jump back to Today when current evidence changes.
 
-The 5-second fallback UI refresh is cheap ledger observation, not source
-collection. It may be relaxed after invalidation reliability is demonstrated.
+The 30-second fallback refresh is a bounded ledger observation, not source
+collection. Ordinary updates use the post-transaction mutation path and do not
+wait for this fallback.
 
 ## 9. Time, ordering, and correctness
 
@@ -400,17 +401,19 @@ file content.
 
 Extend existing status surfaces rather than introducing a second API.
 
-`trackify collection status --json` should include:
+`trackify collection status --json` includes:
 
-- mode: `event_driven`, `reconciling`, or `degraded`;
-- monitor state per configured source/root;
-- last trigger family and observation time;
-- current and pending dirty-scope counts;
-- last incremental collection start/finish;
-- last ledger mutation and UI invalidation time when available;
-- recent source-to-ledger latency percentiles;
-- last full reconciliation and next fallback deadline; and
-- overflow, restart, and recovery counts.
+- mode: `up-to-date`, `pending`, `collecting`, `degraded`, or `stopped`;
+- current pending trigger and path counts;
+- last trigger and incremental collection start/finish;
+- last ledger mutation;
+- ordinary live source-to-ledger latency percentiles;
+- last full reconciliation; and
+- a content-free operational failure description and consecutive-failure count.
+
+Per-root monitor counters and recovery counts remain derivable test diagnostics,
+not persisted production telemetry. This keeps the live status row bounded and
+prevents arbitrary watched paths from entering exports.
 
 `trackify doctor` verifies monitor configuration, path accessibility, stale
 cursors, repeated failures, reconciliation freshness, and mutation convergence.
@@ -542,3 +545,56 @@ Goal 5 does not add:
 
 Those boundaries keep the implementation small: notifications decide when to
 run existing authoritative work; they never decide what the work means.
+
+## 17. Implementation and validation record
+
+Goal 5 is delivered through one app-owned `LiveCollectionCoordinator`, recursive
+FSEvents monitors, targeted conversation and Git collection plans, durable
+cursors, a local cross-process ledger-mutation notification, and one AppModel
+presentation invalidation boundary. Application startup is owned by the macOS
+application delegate, so collection does not depend on opening the menu or main
+window.
+
+The production path was validated against the local ledger containing 102
+repositories and large Codex and Claude cache catalogs. Important measured and
+proven outcomes:
+
+- an installed launch creates live status without opening any UI;
+- ordinary live convergence measured about 1.25 seconds after removing global
+  maintenance from incremental batches;
+- event storms remain capped and coalesced, and triggers arriving during a run
+  form exactly one following batch;
+- one known repository change opens only that repository;
+- one provider append opens only the affected JSONL file while retaining every
+  unrelated durable cursor;
+- recovery remains scoped to the affected source family;
+- SQLite/WAL changes are ignored by FSEvents, preventing a status-write feedback
+  loop;
+- observational Git commands disable optional index writes, preventing Git from
+  manufacturing its own worktree notifications;
+- recursive FSEvents avoid `WatchRoot` root opens; periodic reconciliation owns
+  root-replacement recovery without inducing repeated macOS folder prompts;
+- startup cache recovery and up to 16 recently active repositories are paced;
+  the 30-minute full reconciliation remains authoritative for all roots;
+- incremental batches update diagnostics only for touched sources; global
+  evidence-quality repair remains in full reconciliation;
+- repeated repository observations no longer rerun global session association
+  or repository search indexing unless the mapping or indexed metadata changed;
+- the hidden menu-bar app measured roughly 93–180 MB physical footprint during
+  live validation; larger `ps` RSS values primarily represented shared macOS
+  framework pages and allocator reserve; and
+- live collection never invokes a summary or report provider. Model generation
+  remains behind the existing summary/report scheduler and budget policy.
+
+The final installed bounded sample recorded a 2.70-second median and
+3.56-second p95 ordinary convergence, followed by a five-second stable interval
+with no measurable process CPU at `ps` centisecond resolution. CLI pause/resume
+also converged in the running app; notification delivery is backed by the
+watched settings file and the periodic reconciliation read so launch timing
+cannot leave the runtime out of sync.
+
+Automated validation covers virtual-time coalescing, scoped planning, targeted
+source reads, real recursive FSEvents delivery, migrations, privacy, CLI status,
+store round-trips, application state, and the existing evidence/report suites.
+The fixture privacy guard and installed-bundle diagnostics remain required before
+release commits.

@@ -278,6 +278,7 @@ public struct ActivityQueries: Sendable {
         precondition(activeDayWindow > 0)
         let elapsed = max(0, min(cutoff, range.end).timeIntervalSince(range.start))
         let current = try snapshot(store: store, range: range, cutoff: cutoff, calendar: calendar)
+        let coverageStart = try store.evidenceCoverage()?.start
         var prior: [ActivitySnapshot] = []
         var candidateStart = range.start
         var examinedDays = 0
@@ -287,6 +288,7 @@ public struct ActivityQueries: Sendable {
                 guard let previousStart = calendar.date(byAdding: .day, value: -1, to: candidateStart),
                     let nextStart = calendar.date(byAdding: .day, value: 1, to: previousStart)
                 else { break }
+                if let coverageStart, nextStart <= coverageStart { break }
                 candidateStart = previousStart
                 examinedDays += 1
                 let comparisonCutoff = min(previousStart.addingTimeInterval(elapsed), nextStart)

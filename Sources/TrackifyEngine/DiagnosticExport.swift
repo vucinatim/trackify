@@ -20,6 +20,13 @@ public struct DiagnosticExport: Codable, Equatable, Sendable {
     public let collectorState: String?
     public let collectorHeartbeatPresent: Bool
     public let collectorIssueCount: Int
+    public let liveCollectorMode: LiveCollectorMode?
+    public let livePendingTriggerCount: Int
+    public let livePendingPathCount: Int
+    public let liveConsecutiveFailures: Int
+    public let liveLastLatencySeconds: Double?
+    public let liveP95LatencySeconds: Double?
+    public let lastFullReconciliation: Date?
     public let providers: [SafeProviderDiagnostic]
     public let workIntelligence: WorkIntelligenceCounts
 }
@@ -30,7 +37,7 @@ public struct DiagnosticExporter: Sendable {
     public func make(store: LedgerStore, generatedAt: Date = Date()) throws -> DiagnosticExport {
         let report = try Doctor().inspect(store: store)
         return DiagnosticExport(
-            schemaVersion: 1,
+            schemaVersion: 2,
             generatedAt: generatedAt,
             state: report.state,
             migrations: report.migrations,
@@ -42,6 +49,13 @@ public struct DiagnosticExporter: Sendable {
             collectorState: report.health.collectorState,
             collectorHeartbeatPresent: report.health.collectorObservedAt != nil,
             collectorIssueCount: report.health.collectorIssues.count,
+            liveCollectorMode: report.liveCollector?.mode,
+            livePendingTriggerCount: report.liveCollector?.pendingTriggerCount ?? 0,
+            livePendingPathCount: report.liveCollector?.pendingPathCount ?? 0,
+            liveConsecutiveFailures: report.liveCollector?.consecutiveFailures ?? 0,
+            liveLastLatencySeconds: report.liveCollector?.lastLatencySeconds,
+            liveP95LatencySeconds: report.liveCollector?.p95LatencySeconds,
+            lastFullReconciliation: report.lastFullReconciliation,
             providers: SummaryProviderFactory.health().map {
                 SafeProviderDiagnostic(providerID: $0.providerID, state: $0.state)
             },

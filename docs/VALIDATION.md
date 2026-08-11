@@ -1,6 +1,6 @@
 # Trackify Validation Record
 
-Last updated: 2026-08-07
+Last updated: 2026-08-11
 
 This document records reproducible V1 and Goal 2 checks separately from product design. It does not treat unavailable signing credentials as a successful signed-release test.
 
@@ -78,9 +78,53 @@ forward collection passed. The deterministic UI matrix captured every required
 Overview, Activity, Projects, Reports, and Settings state and was visually
 inspected. Source caches were never modified.
 
+## Goal 5 live-evidence completion record — 2026-08-11
+
+The app-owned live collector was exercised in the installed native development
+bundle against the production ledger, 101 cataloged repositories, and the real
+Codex and Claude cache roots. The app published live status without opening its
+menu or main window. A real recursive FSEvents integration test passed, while
+ordinary file storms remained capped and coalesced in virtual-time tests.
+
+Ordinary installed-app convergence settled at a 2.70-second median and
+3.56-second p95 in the final bounded sample, below the five-second product
+target. A clean five-second interval after convergence consumed no measurable
+process CPU at `ps` centisecond resolution. `vmmap` reported a 58.3 MB physical
+footprint after convergence; higher RSS values included shared
+macOS frameworks and allocator reserve.
+
+The validation exposed and fixed production-only feedback paths before
+completion: SQLite WAL changes under the watched data root, optional Git index
+refresh writes from observational commands, and repeated global repository
+association/index maintenance. It also removed FSEvents `WatchRoot` mode, whose
+synchronous root opens can repeatedly invoke macOS Desktop-folder authorization
+for ad-hoc development builds. Incremental batches now update only touched
+sources, use exact conversation files or known repositories, and record a
+separate `live-collector` heartbeat. Complete reconciliation retains its own
+authoritative timestamp.
+
+CLI pause and resume changed the running app between `stopped` and active modes
+within the bounded check. Cross-process notification is backed by the watched
+settings file and a 30-second reconciliation read, so a launch-time notification
+race cannot leave runtime state stale. Sleep, wake, launch, and resume all use
+bounded provider recovery plus at most 16 recently active repositories; the
+provider families and repositories are paced in small slices so ordinary work
+can converge between them. The 30-minute complete reconciliation remains the
+authority for every root.
+
+The final native bundle passed deep ad-hoc signature verification, installed at
+`~/Applications/Trackify.app`, launched successfully, migrated through
+`0014_live_collector_status`, and reported healthy ledger/evidence state. No
+summary or report provider was invoked by live collection.
+
+The final local build used the machine's existing Apple Development identity
+rather than an ad-hoc signature. This gives successive development bundles a
+stable macOS privacy identity; production releases continue to use the separate
+Developer ID signing and notarization pipeline.
+
 ## Automated checks
 
-- `swift test`: 134 tests across domain, store, engine, adapters, macOS application state, Goal 2 capability discovery, canonical evidence integrity, bounded rebuild coverage, Claude sidechain and compacted-context classification, Claude Desktop Code audit ingestion, queue isolation/recovery, cross-process provider-generation coalescing, weekly allowance attribution, live menu budget state, budget-fallback recovery without retry churn, provider credit rates, budget migration, usage and budgets, versioned templates, independently managed scheduled reporters, pre-compilation repository-group scoping, run-specific instructions, repeated manual generation, canonical summary coverage/upgrades, internal-message filtering, privacy profiles, immutable artifacts, idempotent delivery, stable pagination, dense hourly and one-year/120-repository query scale, deterministic simulation, migrations, privacy, updates, and CLI surfaces.
+- `swift test`: 145 tests across domain, store, engine, adapters, macOS application state, Goal 2 capability discovery, canonical evidence integrity, bounded rebuild coverage, Claude sidechain and compacted-context classification, Claude Desktop Code audit ingestion, live FSEvents planning and delivery, queue isolation/recovery, cross-process provider-generation coalescing, weekly allowance attribution, live menu budget state, budget-fallback recovery without retry churn, provider credit rates, budget migration, usage and budgets, versioned templates, independently managed scheduled reporters, pre-compilation repository-group scoping, run-specific instructions, repeated manual generation, canonical summary coverage/upgrades, internal-message filtering, privacy profiles, immutable artifacts, idempotent delivery, stable pagination, dense hourly and one-year/120-repository query scale, deterministic simulation, migrations, privacy, updates, and CLI surfaces.
 - `swift format lint --recursive --strict`: clean using the repository configuration.
 - `git diff --check`: clean.
 - `scripts/check-fixture-privacy.sh`: sanitized fixture structure and credential/path checks pass.

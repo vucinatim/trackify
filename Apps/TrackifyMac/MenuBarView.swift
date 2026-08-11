@@ -166,7 +166,7 @@ struct MenuBarView: View {
                     } label: {
                         Label("Sync now", systemImage: "arrow.triangle.2.circlepath")
                     }
-                    .disabled(model.isCollecting)
+                    .disabled(model.isAnyCollectionActive)
 
                     Divider()
                     Button {
@@ -197,12 +197,13 @@ struct MenuBarView: View {
         }
         .padding(16)
         .frame(width: 390)
-        .task { await model.start() }
     }
 
     private var headline: String {
         if model.collectionPaused { return "Collection paused" }
         if model.degradedMessage != nil { return "Trackify needs attention" }
+        if model.isRecordingPending { return "Recording new evidence" }
+        if model.isAnyCollectionActive { return "Updating evidence" }
         if model.llmBudgetPaused { return "Evidence current · LLM budget paused" }
         if model.isSummarizing { return "Evidence current · summarizing" }
         return model.hasEvidenceToday ? "Evidence recorded today" : "Tracking quietly"
@@ -211,7 +212,8 @@ struct MenuBarView: View {
     private var collectionStatus: (title: String, color: Color) {
         if model.collectionPaused { return ("Paused", .secondary) }
         if model.degradedMessage != nil { return ("Needs attention", .orange) }
-        if model.isCollecting { return ("Syncing", .blue) }
+        if model.isRecordingPending { return ("Recording", .blue) }
+        if model.isAnyCollectionActive { return ("Syncing", .blue) }
         if model.llmBudgetPaused { return ("LLM paused", .orange) }
         if model.isSummarizing { return ("Summarizing", .purple) }
         return ("Up to date", .green)

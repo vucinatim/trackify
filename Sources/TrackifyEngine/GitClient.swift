@@ -59,9 +59,19 @@ public struct GitCommitInspection: Equatable, Sendable {
 public struct GitClient: Sendable {
     private let runner: any CommandRunning
     private let executable = URL(filePath: "/usr/bin/git")
+    private let environment: [String: String]
 
-    public init(runner: any CommandRunning = ProcessRunner()) {
+    public init(
+        runner: any CommandRunning = ProcessRunner(),
+        environment: [String: String] = ProcessInfo.processInfo.environment
+    ) {
         self.runner = runner
+        var environment = environment
+        // Trackify only observes repositories. Prevent read commands such as
+        // `git status` from refreshing the index and feeding their own FSEvents
+        // back into live collection.
+        environment["GIT_OPTIONAL_LOCKS"] = "0"
+        self.environment = environment
     }
 
     public func inspect(_ candidate: RepositoryCandidate) throws -> GitRepositoryInspection {
@@ -127,7 +137,7 @@ public struct GitClient: Sendable {
             executable: executable,
             arguments: arguments,
             workingDirectory: nil,
-            environment: nil,
+            environment: environment,
             outputLimit: outputLimit
         )
         guard output.status == 0 else {
@@ -151,7 +161,7 @@ public struct GitClient: Sendable {
                 executable: executable,
                 arguments: arguments,
                 workingDirectory: nil,
-                environment: nil,
+                environment: environment,
                 outputLimit: 1 * 1_024 * 1_024
             ), output.status == 0
         else { return nil }

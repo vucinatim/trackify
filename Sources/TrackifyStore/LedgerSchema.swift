@@ -16,6 +16,7 @@ enum LedgerSchema {
     static let canonicalEvidenceLookupMigration = "0011_canonical_evidence_lookups"
     static let evidenceCoverageMigration = "0012_evidence_coverage"
     static let providerAllowanceMigration = "0013_provider_allowance_attribution"
+    static let liveCollectorMigration = "0014_live_collector_status"
     static let messageDuplicateTolerance = 0.5
 
     static var migrator: DatabaseMigrator {
@@ -1223,6 +1224,39 @@ enum LedgerSchema {
 
                     CREATE INDEX provider_allowance_window
                         ON provider_allowance_attributions(provider, resets_at, started_at);
+                    """)
+        }
+        migrator.registerMigration(liveCollectorMigration) { db in
+            try db.execute(
+                sql: """
+                    CREATE TABLE live_collector_status (
+                        id INTEGER PRIMARY KEY NOT NULL CHECK (id = 1),
+                        mode TEXT NOT NULL,
+                        pending_trigger_count INTEGER NOT NULL,
+                        pending_path_count INTEGER NOT NULL,
+                        last_trigger_at REAL,
+                        last_collection_started_at REAL,
+                        last_collection_finished_at REAL,
+                        last_mutation_at REAL,
+                        last_latency_seconds REAL,
+                        median_latency_seconds REAL,
+                        p95_latency_seconds REAL,
+                        consecutive_failures INTEGER NOT NULL,
+                        last_error TEXT,
+                        recorded_at REAL NOT NULL
+                    );
+                    """)
+            // Before live collection existed, every collector heartbeat represented
+            // a complete pass. Preserve that authority before incremental passes
+            // begin recording their independent heartbeat.
+            try db.execute(
+                sql: """
+                    INSERT OR IGNORE INTO service_heartbeats (
+                        service, process_id, observed_at, state
+                    )
+                    SELECT 'reconciliation', process_id, observed_at, state
+                    FROM service_heartbeats
+                    WHERE service = 'collector';
                     """)
         }
         return migrator

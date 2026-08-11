@@ -5,7 +5,7 @@ Trackify is a passive, native macOS development-work ledger. It observes local G
 The same local ledger is available through the macOS menu-bar application and a first-class `trackify` CLI for coding agents.
 
 > [!IMPORTANT]
-> Trackify V1 through Goal 4 are implemented and locally validated. Goal 5 live evidence is planned. Public distribution is a separate later milestone requiring the project owner's signing and notarization credentials.
+> Trackify V1 through Goal 5 are implemented and locally validated. Public distribution is a separate later milestone requiring the project owner's signing and notarization credentials.
 
 ## Principles
 
@@ -103,6 +103,11 @@ swift run trackify show summary <summary-id> --json
 swift run trackify update status --json
 TRACKIFY_ARCHITECTURES=native scripts/build-app-bundle.sh .build/bundle
 ```
+
+Local contributors with an Apple Development certificate should set
+`TRACKIFY_DEVELOPMENT_SIGNING_IDENTITY` to its identity name or SHA-1 hash.
+Keeping that identity stable across rebuilds lets macOS retain Files & Folders
+permissions; the script falls back to ad-hoc signing when it is unset.
 
 Source-build lifecycle scripts install a previously built and verified bundle without `sudo`, repair only Trackify's CLI link, and move uninstall targets to Trash:
 

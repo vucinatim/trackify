@@ -397,6 +397,25 @@ public final class LedgerStore: @unchecked Sendable {
     ) throws {
         precondition(workingCopy.repositoryID == repository.id)
         try database.write { db in
+            let existingRepository = try Row.fetchOne(
+                db,
+                sql: "SELECT display_name, remote_identity FROM repositories WHERE id = ?",
+                arguments: [repository.id.rawValue])
+            let existingWorkingCopy = try Row.fetchOne(
+                db,
+                sql: "SELECT repository_id, canonical_path FROM working_copies WHERE id = ?",
+                arguments: [workingCopy.id.rawValue])
+            let repositoryMetadataChanged =
+                existingRepository.map { row in
+                    (row["display_name"] as String) != repository.displayName
+                        || (repository.remoteIdentity != nil
+                            && (row["remote_identity"] as String?) != repository.remoteIdentity)
+                } ?? true
+            let workingCopyMappingChanged =
+                existingWorkingCopy.map { row in
+                    (row["repository_id"] as String) != workingCopy.repositoryID.rawValue
+                        || (row["canonical_path"] as String) != workingCopy.canonicalPath
+                } ?? true
             try db.execute(
                 sql: """
                     INSERT INTO repositories (
@@ -437,6 +456,7 @@ public final class LedgerStore: @unchecked Sendable {
                     workingCopy.lastObservedAt.timeIntervalSince1970,
                 ]
             )
+            var locationChanged = false
             if discoveryRootID != nil || relativePath != nil {
                 let current = try Row.fetchOne(
                     db,
@@ -455,6 +475,7 @@ public final class LedgerStore: @unchecked Sendable {
                             && (row["relative_path"] as String?) == relativePath
                     } ?? false
                 if !unchanged {
+                    locationChanged = true
                     try db.execute(
                         sql: "UPDATE working_copy_locations SET valid_until = ? WHERE working_copy_id = ? AND valid_until IS NULL",
                         arguments: [workingCopy.lastObservedAt.timeIntervalSince1970, workingCopy.id.rawValue]
@@ -476,33 +497,37 @@ public final class LedgerStore: @unchecked Sendable {
                 }
             }
 
-            try Self.associateSessions(db: db, with: workingCopy)
-            let canonicalPaths = try String.fetchAll(
-                db,
-                sql: "SELECT canonical_path FROM working_copies WHERE repository_id = ? ORDER BY canonical_path",
-                arguments: [repository.id.rawValue]
-            )
-            let relativePaths = try String.fetchAll(
-                db,
-                sql: """
-                    SELECT relative_path
-                    FROM working_copy_locations
-                    WHERE valid_until IS NULL
-                      AND relative_path IS NOT NULL
-                      AND working_copy_id IN (SELECT id FROM working_copies WHERE repository_id = ?)
-                    ORDER BY relative_path
-                    """,
-                arguments: [repository.id.rawValue]
-            )
-            try Self.index(
-                db: db,
-                kind: .repository,
-                entityID: repository.id.rawValue,
-                repositoryID: repository.id,
-                occurredAt: repository.lastObservedAt,
-                content: ([repository.displayName, repository.remoteIdentity].compactMap { $0 }
-                    + canonicalPaths + relativePaths).joined(separator: " ")
-            )
+            if workingCopyMappingChanged {
+                try Self.associateSessions(db: db, with: workingCopy)
+            }
+            if repositoryMetadataChanged || workingCopyMappingChanged || locationChanged {
+                let canonicalPaths = try String.fetchAll(
+                    db,
+                    sql: "SELECT canonical_path FROM working_copies WHERE repository_id = ? ORDER BY canonical_path",
+                    arguments: [repository.id.rawValue]
+                )
+                let relativePaths = try String.fetchAll(
+                    db,
+                    sql: """
+                        SELECT relative_path
+                        FROM working_copy_locations
+                        WHERE valid_until IS NULL
+                          AND relative_path IS NOT NULL
+                          AND working_copy_id IN (SELECT id FROM working_copies WHERE repository_id = ?)
+                        ORDER BY relative_path
+                        """,
+                    arguments: [repository.id.rawValue]
+                )
+                try Self.index(
+                    db: db,
+                    kind: .repository,
+                    entityID: repository.id.rawValue,
+                    repositoryID: repository.id,
+                    occurredAt: repository.lastObservedAt,
+                    content: ([repository.displayName, repository.remoteIdentity].compactMap { $0 }
+                        + canonicalPaths + relativePaths).joined(separator: " ")
+                )
+            }
         }
     }
 
@@ -1250,6 +1275,16 @@ public final class LedgerStore: @unchecked Sendable {
         }
     }
 
+    public func heartbeatObservedAt(service: String) throws -> Date? {
+        try database.read { db in
+            try Double.fetchOne(
+                db,
+                sql: "SELECT observed_at FROM service_heartbeats WHERE service = ?",
+                arguments: [service]
+            ).map(Date.init(timeIntervalSince1970:))
+        }
+    }
+
     public func replaceCollectorIssues(_ issues: [(sourceKey: String, message: String)], at date: Date) throws {
         try database.write { db in
             try db.execute(sql: "DELETE FROM collector_issues")
@@ -1258,6 +1293,26 @@ public final class LedgerStore: @unchecked Sendable {
                     sql: "INSERT INTO collector_issues (source_key, message, observed_at) VALUES (?, ?, ?)",
                     arguments: [issue.sourceKey, issue.message, date.timeIntervalSince1970]
                 )
+            }
+        }
+    }
+
+    public func replaceCollectorIssues(
+        _ issues: [(sourceKey: String, message: String)],
+        forSourceKeys sourceKeys: Set<String>,
+        at date: Date
+    ) throws {
+        guard !sourceKeys.isEmpty else { return }
+        try database.write { db in
+            for sourceKey in sourceKeys {
+                try db.execute(
+                    sql: "DELETE FROM collector_issues WHERE source_key = ?",
+                    arguments: [sourceKey])
+            }
+            for issue in issues where sourceKeys.contains(issue.sourceKey) {
+                try db.execute(
+                    sql: "INSERT INTO collector_issues (source_key, message, observed_at) VALUES (?, ?, ?)",
+                    arguments: [issue.sourceKey, issue.message, date.timeIntervalSince1970])
             }
         }
     }
@@ -1273,6 +1328,76 @@ public final class LedgerStore: @unchecked Sendable {
                 observedAt: (heartbeat?["observed_at"] as Double?).map(Date.init(timeIntervalSince1970:)),
                 issueCount: Int.fetchOne(db, sql: "SELECT COUNT(*) FROM collector_issues") ?? 0
             )
+        }
+    }
+
+    public func recordLiveCollectorStatus(
+        _ status: LiveCollectorRuntimeStatus,
+        at recordedAt: Date
+    ) throws {
+        try database.write { db in
+            try db.execute(
+                sql: """
+                    INSERT INTO live_collector_status (
+                        id, mode, pending_trigger_count, pending_path_count,
+                        last_trigger_at, last_collection_started_at,
+                        last_collection_finished_at, last_mutation_at,
+                        last_latency_seconds, median_latency_seconds, p95_latency_seconds,
+                        consecutive_failures, last_error, recorded_at
+                    ) VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(id) DO UPDATE SET
+                        mode = excluded.mode,
+                        pending_trigger_count = excluded.pending_trigger_count,
+                        pending_path_count = excluded.pending_path_count,
+                        last_trigger_at = excluded.last_trigger_at,
+                        last_collection_started_at = excluded.last_collection_started_at,
+                        last_collection_finished_at = excluded.last_collection_finished_at,
+                        last_mutation_at = excluded.last_mutation_at,
+                        last_latency_seconds = excluded.last_latency_seconds,
+                        median_latency_seconds = excluded.median_latency_seconds,
+                        p95_latency_seconds = excluded.p95_latency_seconds,
+                        consecutive_failures = excluded.consecutive_failures,
+                        last_error = excluded.last_error,
+                        recorded_at = excluded.recorded_at
+                    """,
+                arguments: [
+                    status.mode.rawValue,
+                    status.pendingTriggerCount,
+                    status.pendingPathCount,
+                    status.lastTriggerAt?.timeIntervalSince1970,
+                    status.lastCollectionStartedAt?.timeIntervalSince1970,
+                    status.lastCollectionFinishedAt?.timeIntervalSince1970,
+                    status.lastMutationAt?.timeIntervalSince1970,
+                    status.lastLatencySeconds,
+                    status.medianLatencySeconds,
+                    status.p95LatencySeconds,
+                    status.consecutiveFailures,
+                    status.lastError,
+                    recordedAt.timeIntervalSince1970,
+                ])
+        }
+    }
+
+    public func liveCollectorStatus() throws -> LiveCollectorRuntimeStatus? {
+        try database.read { db in
+            guard let row = try Row.fetchOne(db, sql: "SELECT * FROM live_collector_status WHERE id = 1"),
+                let mode = LiveCollectorMode(rawValue: row["mode"] as String)
+            else { return nil }
+            return LiveCollectorRuntimeStatus(
+                mode: mode,
+                pendingTriggerCount: row["pending_trigger_count"],
+                pendingPathCount: row["pending_path_count"],
+                lastTriggerAt: (row["last_trigger_at"] as Double?).map(Date.init(timeIntervalSince1970:)),
+                lastCollectionStartedAt: (row["last_collection_started_at"] as Double?)
+                    .map(Date.init(timeIntervalSince1970:)),
+                lastCollectionFinishedAt: (row["last_collection_finished_at"] as Double?)
+                    .map(Date.init(timeIntervalSince1970:)),
+                lastMutationAt: (row["last_mutation_at"] as Double?).map(Date.init(timeIntervalSince1970:)),
+                lastLatencySeconds: row["last_latency_seconds"],
+                medianLatencySeconds: row["median_latency_seconds"],
+                p95LatencySeconds: row["p95_latency_seconds"],
+                consecutiveFailures: row["consecutive_failures"],
+                lastError: row["last_error"])
         }
     }
 
@@ -1720,6 +1845,7 @@ public final class LedgerStore: @unchecked Sendable {
                 ]
             )
         }
+        TrackifyChangeSignal.post(for: databaseURL, kind: .ledger)
     }
 
     public func discoveryRoots(enabledOnly: Bool = false) throws -> [DiscoveryRoot] {
