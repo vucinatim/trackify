@@ -86,12 +86,15 @@ struct EvidenceIntegrityTests {
             #"{"timestamp":"2026-08-07T08:00:01.000Z","type":"turn_context","payload":{"turn_id":"turn-1","cwd":"/workspace/project"}}"#,
             #"{"timestamp":"2026-08-07T08:00:02.000Z","type":"event_msg","payload":{"type":"mcp_tool_call_end","turn_id":"turn-1","call_id":"call-1"}}"#,
             #"{"timestamp":"2026-08-07T08:00:03.000Z","type":"event_msg","payload":{"type":"thread_goal_updated","turn_id":"turn-1"}}"#,
+            #"{"timestamp":"2026-08-07T08:00:04.000Z","type":"event_msg","payload":{"type":"thread_rolled_back","turn_id":"turn-1"}}"#,
         ].map { Data($0.utf8) }
         let parsed = try CodexConversationParser().parse(
             lines: lines, fallbackSessionID: "fallback", observedAt: Date())
         let types = Set(parsed.normalizedRecords.map(\.provenance.sourceRecordType))
         #expect(types.contains("event_msg.mcp_tool_call_end"))
         #expect(types.contains("event_msg.thread_goal_updated"))
+        #expect(types.contains("event_msg.thread_rolled_back"))
+        #expect(parsed.unknownRecordCount == 0)
         #expect(parsed.normalizedRecords.allSatisfy { $0.provenance.disposition != .unresolved })
     }
 

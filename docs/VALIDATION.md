@@ -6,7 +6,7 @@ This document records reproducible V1 through Goal 5 checks separately from prod
 
 ## Completion hardening record — 2026-08-11
 
-- All 151 tests in 10 suites pass; strict formatting, fixture privacy, shell syntax, workflow YAML, Git whitespace, release build, and the schema-v2 two-day simulation pass. The preceding 149-test integration commit also passed with code coverage enabled in CI.
+- All 152 tests in 10 suites pass; strict formatting, fixture privacy, shell syntax, workflow YAML, Git whitespace, release build, and the schema-v2 two-day simulation pass. The preceding 149-test integration commit also passed with code coverage enabled in CI.
 - Summary v5 uses semantic message origin/kind rather than display role, so human/delegated intent remains prominent while provider notifications and agent progress cannot be mislabeled as user requests. A 12-hour pacing regression proves each refresh upgrades at most one newest half-hour leaf, live current/day composition uses no provider call, and the closed day receives exactly one provider synthesis only after all leaves are upgraded.
 - Default safeguards are 48 calls/day, 2 million tokens/day, 30 million tokens/month, and 3% of the observed weekly Codex allowance. Existing default settings migrate forward while explicit user values remain unchanged.
 - Ctrl-C/SIGTERM and app shutdown now terminate only Trackify-owned provider children. An actual CLI/provider signal drill exited 130 with no orphan, no surviving lease, and an immediate explicit cancelled terminal record. Catch-up spends allowance on at most one newest eligible half-hour per refresh, then rebuilds visible parents locally without waiting behind old gaps.
@@ -164,9 +164,17 @@ final `localOnly` telemetry clarification. Its deep bundle signature passes,
 doctor remains healthy, and no summary run, report run, provider child, or
 installer rollback is left active.
 
+Installed build `0.3.0-dev` (`512`) recognizes Codex
+`event_msg.thread_rolled_back` as non-metric control evidence. Migration 15
+reclassified the one previously unresolved live record without inspecting or
+changing conversation text, recomputed its canonical structural identity, and
+removed the adapter issue only after the unresolved count reached zero. Live
+doctor returned healthy with no problems; the migration and installer rollback
+snapshots were moved to Trash after verification.
+
 ## Automated checks
 
-- `swift test`: 151 tests across domain, store, engine, adapters, macOS application state, Goal 2 capability discovery, canonical evidence integrity, bounded rebuild coverage, Claude sidechain and compacted-context classification, Claude Desktop Code audit ingestion, live FSEvents planning and delivery, queue isolation/recovery, provider-process cancellation, exact-owner signal recovery, newest-first bounded summary catch-up, dead-owner lease reclamation, interrupted-summary startup recovery, cross-process provider-generation coalescing, weekly allowance attribution, live menu budget state, budget-fallback recovery without retry churn, provider credit rates, budget migration, usage and budgets, versioned templates, independently managed scheduled reporters, pre-compilation repository-group scoping, run-specific instructions, repeated manual generation, canonical summary coverage/upgrades, internal-message filtering, privacy profiles, immutable artifacts, idempotent delivery, stable pagination, dense hourly and one-year/120-repository query scale, deterministic simulation, migrations, privacy, updates, and CLI surfaces.
+- `swift test`: 152 tests across domain, store, engine, adapters, macOS application state, Goal 2 capability discovery, canonical evidence integrity, Codex rollback classification and migration repair, bounded rebuild coverage, Claude sidechain and compacted-context classification, Claude Desktop Code audit ingestion, live FSEvents planning and delivery, queue isolation/recovery, provider-process cancellation, exact-owner signal recovery, newest-first bounded summary catch-up, dead-owner lease reclamation, interrupted-summary startup recovery, cross-process provider-generation coalescing, weekly allowance attribution, live menu budget state, budget-fallback recovery without retry churn, provider credit rates, budget migration, usage and budgets, versioned templates, independently managed scheduled reporters, pre-compilation repository-group scoping, run-specific instructions, repeated manual generation, canonical summary coverage/upgrades, internal-message filtering, privacy profiles, immutable artifacts, idempotent delivery, stable pagination, dense hourly and one-year/120-repository query scale, deterministic simulation, migrations, privacy, updates, and CLI surfaces.
 - `swift format lint --recursive --strict`: clean using the repository configuration.
 - `git diff --check`: clean.
 - `scripts/check-fixture-privacy.sh`: sanitized fixture structure and credential/path checks pass.
