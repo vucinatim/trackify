@@ -1,0 +1,15 @@
+{
+  "id": "clockify-entry",
+  "name": "Clockify entry",
+  "purpose": "Create a paste-ready Clockify description from concrete work evidence",
+  "audience": "workplace time tracking",
+  "cadence": "on_demand",
+  "repositoryIDs": [],
+  "groupNames": ["Work"],
+  "customFocus": "Write one concise Clockify description covering the concrete outcomes and main work threads. Combine closely related work, name the relevant projects naturally, and state unfinished work honestly. Do not invent duration or claim completion without evidence. Return only the paste-ready entry text, without headings, bullets, timestamps, metrics, evidence identifiers, or commentary.",
+  "tone": "professional, concise, and natural",
+  "outputFormat": "plain_text",
+  "maximumCharacters": 700,
+  "privacyProfile": "team",
+  "providerModeOverride": "codex"
+}

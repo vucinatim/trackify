@@ -1,0 +1,2 @@
+{"type":"user","uuid":"01900000-0000-7000-8000-000000000001","sessionId":"01900000-0000-7000-8000-000000000002","timestamp":"2026-08-04T09:00:00.000Z","cwd":"/Users/example/Developer/Work/sample-repo","message":{"role":"user","content":"Synthetic fixture content."}}
+{"type":"assistant","uuid":"01900000-0000-7000-8000-000000000003","sessionId":"01900000-0000-7000-8000-000000000002","timestamp":"2026-08-04T09:00:01.000Z","message":{"role":"assistant","content":[{"type":"text","text":"Synthetic unfinished

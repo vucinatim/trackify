@@ -1,0 +1,52 @@
+name: Swift
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - name: Verify Swift toolchain
+        run: swift --version | grep -E 'Swift version 6\.'
+      - name: Resolve dependencies
+        run: swift package resolve
+      - name: Verify source formatting and scripts
+        run: |
+          swift format lint --recursive --strict Sources Tests Apps Package.swift
+          git diff --check
+          for script in scripts/*.sh; do zsh -n "$script"; done
+      - name: Build release configuration
+        run: swift build --configuration release
+      - name: Run tests
+        run: swift test --enable-code-coverage
+      - name: Verify isolated deterministic simulation
+        run: |
+          swift run trackify simulate \
+            --scenario foundation \
+            --speed instant \
+            --days 2 \
+            --json > simulation.json
+          test "$(jq -r '.schemaVersion' simulation.json)" = "2"
+          test "$(jq -r '.result.generatedEvents' simulation.json)" = "9"
+          test "$(jq -r '.result.counts.events' simulation.json)" = "9"
+          test "$(jq -r '.result.days[1].llmTurns' simulation.json)" = "2"
+      - name: Verify fixture privacy
+        run: scripts/check-fixture-privacy.sh
+      - name: Build native app bundle
+        env:
+          TRACKIFY_ARCHITECTURES: native
+          TRACKIFY_VERSION: 0.2.0-ci
+          TRACKIFY_BUILD_NUMBER: ${{ github.run_number }}
+        run: |
+          scripts/build-app-bundle.sh .build/ci-bundle
+          test "$(.build/ci-bundle/Trackify.app/Contents/SharedSupport/trackify --version)" = "0.2.0-ci"
+          plutil -lint .build/ci-bundle/Trackify.app/Contents/Info.plist

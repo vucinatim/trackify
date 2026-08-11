@@ -1,0 +1,129 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing or new release tag, such as v1.0.0
+        required: true
+        type: string
+      build:
+        description: Monotonic CFBundleVersion
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  release:
+    environment: release
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Verify Swift toolchain
+        run: swift --version | grep -E 'Swift version 6\.'
+      - name: Validate release inputs
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          RELEASE_BUILD: ${{ inputs.build }}
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          [[ "$RELEASE_BUILD" =~ ^[0-9]+$ ]]
+          test -z "$(git status --porcelain)"
+          if git rev-parse --verify "refs/tags/$RELEASE_TAG" >/dev/null 2>&1; then
+            test "$(git rev-list -n 1 "$RELEASE_TAG")" = "$(git rev-parse HEAD)"
+          fi
+      - name: Test source
+        run: |
+          swift test
+          swift format lint --recursive --strict Sources Tests Apps Package.swift
+          scripts/check-fixture-privacy.sh
+      - name: Build and ad-hoc sign Universal 2 app
+        env:
+          TRACKIFY_VERSION: ${{ inputs.tag }}
+          TRACKIFY_BUILD_NUMBER: ${{ inputs.build }}
+          TRACKIFY_INSTALLATION_ORIGIN: direct
+          TRACKIFY_SPARKLE_PUBLIC_KEY: ${{ secrets.SPARKLE_EDDSA_PUBLIC_KEY }}
+        run: |
+          export TRACKIFY_VERSION="${TRACKIFY_VERSION#v}"
+          test -n "$TRACKIFY_SPARKLE_PUBLIC_KEY"
+          test "$TRACKIFY_SPARKLE_PUBLIC_KEY" = "$(tr -d '\n' < site/release-public-key.txt)"
+          scripts/build-app-bundle.sh .build/release-bundle
+          scripts/sign-app-bundle.sh .build/release-bundle/Trackify.app
+      - name: Verify release application
+        run: |
+          version="${{ inputs.tag }}"
+          scripts/verify-release-app.sh \
+            .build/release-bundle/Trackify.app "${version#v}" "${{ inputs.build }}"
+      - name: Prepare signed release assets
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_EDDSA_PRIVATE_KEY }}
+          SPARKLE_PUBLIC_KEY: ${{ secrets.SPARKLE_EDDSA_PUBLIC_KEY }}
+        run: |
+          version="${RELEASE_TAG#v}"
+          asset_root=".build/release-assets"
+          sparkle_root=".build/sparkle-feed"
+          mkdir -p "$asset_root"
+          archive="$asset_root/Trackify-${version}-universal.zip"
+          ditto -c -k --keepParent .build/release-bundle/Trackify.app "$archive"
+          hdiutil create -volname Trackify -srcfolder .build/release-bundle/Trackify.app \
+            -ov -format UDZO "$asset_root/Trackify-${version}.dmg"
+          printf '%s' "$SPARKLE_PRIVATE_KEY" > .build/sparkle-private-key
+          chmod 600 .build/sparkle-private-key
+          derived_public_key=$(SPARKLE_KEY_FILE=.build/sparkle-private-key /usr/bin/xcrun swift -e '
+            import CryptoKit
+            import Foundation
+            let path = ProcessInfo.processInfo.environment["SPARKLE_KEY_FILE"]!
+            let encoded = try String(contentsOfFile: path, encoding: .utf8)
+            let seed = Data(base64Encoded: encoded.trimmingCharacters(in: .whitespacesAndNewlines))!
+            let key = try Curve25519.Signing.PrivateKey(rawRepresentation: seed)
+            print(key.publicKey.rawRepresentation.base64EncodedString())
+          ')
+          test "$derived_public_key" = "$SPARKLE_PUBLIC_KEY"
+          test "$SPARKLE_PUBLIC_KEY" = "$(tr -d '\n' < site/release-public-key.txt)"
+          mkdir -p "$sparkle_root"
+          cp "$archive" "$sparkle_root/"
+          cp site/appcast.xml "$sparkle_root/appcast.xml"
+          .build/artifacts/sparkle/Sparkle/bin/generate_appcast \
+            --ed-key-file .build/sparkle-private-key \
+            --download-url-prefix "https://github.com/vucinatim/trackify/releases/download/${RELEASE_TAG}/" \
+            --maximum-deltas 0 \
+            --maximum-versions 3 \
+            -o "$sparkle_root/appcast.xml" "$sparkle_root"
+          cp "$sparkle_root/appcast.xml" "$asset_root/appcast.xml"
+          sha256=$(shasum -a 256 "$archive" | awk '{print $1}')
+          size=$(stat -f %z "$archive")
+          jq -n \
+            --arg version "$version" \
+            --arg build "${{ inputs.build }}" \
+            --arg url "https://github.com/vucinatim/trackify/releases/download/${RELEASE_TAG}/Trackify-${version}-universal.zip" \
+            --arg sha256 "$sha256" \
+            --argjson size "$size" \
+            '{schemaVersion:1,version:$version,build:$build,minimumMacOS:"14.0",assets:{universal:{url:$url,sha256:$sha256,size:$size}},signing:{applicationBundleId:"com.zoulabs.trackify",cliIdentifier:"com.zoulabs.trackify.cli",appleCodeSigning:"ad-hoc",notarized:false,updateArchive:"ed25519"}}' \
+            > "$asset_root/release-manifest.json"
+          .build/artifacts/sparkle/Sparkle/bin/sign_update \
+            --ed-key-file .build/sparkle-private-key -p "$asset_root/release-manifest.json" \
+            > "$asset_root/release-manifest.json.sig"
+          test -s "$asset_root/release-manifest.json.sig"
+          .build/artifacts/sparkle/Sparkle/bin/sign_update \
+            --verify --ed-key-file .build/sparkle-private-key \
+            "$asset_root/release-manifest.json" "$(cat "$asset_root/release-manifest.json.sig")"
+          cp site/release-public-key.txt "$asset_root/release-public-key.txt"
+          (cd "$asset_root" && shasum -a 256 Trackify-* > SHA256SUMS)
+          swift package show-dependencies --format json > "$asset_root/sbom.swiftpm.json"
+          rm .build/sparkle-private-key
+      - name: Publish immutable GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          git rev-parse "$RELEASE_TAG" >/dev/null 2>&1 || git tag "$RELEASE_TAG"
+          git push origin "$RELEASE_TAG"
+          gh release create "$RELEASE_TAG" .build/release-assets/* \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --generate-notes --title "Trackify ${RELEASE_TAG#v}"
+          gh workflow run pages.yml --ref main
