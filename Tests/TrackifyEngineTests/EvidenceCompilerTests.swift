@@ -535,6 +535,13 @@ struct EvidenceCompilerTests {
             #expect(current.childSummaryIDs.count == 2)
             #expect(current.coverage.isComplete)
 
+            let catchup = await coordinator.refresh(
+                store: store, settings: settings, now: now,
+                calendar: calendar, lookbackDays: 1)
+            #expect(catchup.issues.isEmpty)
+            #expect(catchup.generated.count == 3)
+            #expect(await counter.value == 2)
+
             let unchanged = await coordinator.refresh(
                 store: store, settings: settings, now: now,
                 calendar: calendar, lookbackDays: 1)
@@ -715,7 +722,7 @@ struct EvidenceCompilerTests {
         }
     }
 
-    @Test("An active day invokes the provider only for leaves and one closed-day synthesis")
+    @Test("Automatic summaries upgrade one leaf per refresh and synthesize a closed day once")
     func automaticSummaryPacing() async throws {
         try await withCompilerStore { store in
             var calendar = Calendar(identifier: .gregorian)
@@ -751,16 +758,18 @@ struct EvidenceCompilerTests {
                 calendar: calendar, lookbackDays: 1)
             #expect(openDay.issues.isEmpty)
             #expect(openDay.generated.count == 26)
-            #expect(await counter.value == 24)
+            #expect(await counter.value == 1)
             #expect(try store.summaries(kinds: [.segment], limit: 100).count == 24)
             #expect(try store.latestSummary(kind: .current)?.provider == nil)
             #expect(try store.latestSummary(kind: .day)?.provider == nil)
 
-            let closedDay = await coordinator.refresh(
-                store: store, settings: settings,
-                now: day.end.addingTimeInterval(3_600),
-                calendar: calendar, lookbackDays: 2)
-            #expect(closedDay.issues.isEmpty)
+            for _ in 0..<23 {
+                let closedDay = await coordinator.refresh(
+                    store: store, settings: settings,
+                    now: day.end.addingTimeInterval(3_600),
+                    calendar: calendar, lookbackDays: 2)
+                #expect(closedDay.issues.isEmpty)
+            }
             #expect(await counter.value == 25)
             let finalized = try #require(
                 try store.summaries(
@@ -816,6 +825,10 @@ struct EvidenceCompilerTests {
             let newerLeaf = try #require(leaves.first { $0.periodStart <= newer && $0.periodEnd > newer })
             #expect(olderLeaf.provider == nil)
             #expect(newerLeaf.provider == .codex)
+            let olderRun = try #require(
+                try store.summaryRuns(limit: 20).first { $0.summaryID == olderLeaf.id })
+            #expect(olderRun.selectionMode == .localOnly)
+            #expect(olderRun.failureClass == nil)
         }
     }
 

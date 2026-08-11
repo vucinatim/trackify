@@ -3,7 +3,7 @@
 Status: Implemented and locally validated
 Last updated: 2026-08-11
 
-Summary semantics are currently versioned as `work-summary-v5`. V5 classifies intent from canonical message provenance, never from the UI role alone; live current/day summaries compose locally from closed half-hour leaves, while one provider-authored daily synthesis is generated only after the day closes. Interrupted runs recover explicitly and every semantic or prompt change invalidates incompatible derived revisions without mutating evidence.
+Summary semantics are currently versioned as `work-summary-v5`. V5 classifies intent from canonical message provenance, never from the UI role alone; live current/day summaries compose locally from closed half-hour leaves, while one provider-authored daily synthesis is generated only after the day closes and its leaves are upgraded. Interrupted runs recover explicitly and every semantic or prompt change invalidates incompatible derived revisions without mutating evidence.
 
 Goal 3 separates Trackify's automatic understanding of work from user-directed
 outputs. It replaces the overloaded legacy `WorkReport` concept with two clear,
@@ -147,8 +147,11 @@ Summary scheduling is separate from report scheduling.
 - Quiet intervals, unchanged fingerprints, unavailable providers, and local
   fallback never block evidence collection.
 - A closed day receives a final summary after all known leaves are current.
-- Current work and today are attempted before older backfill. Leaf generation
-  reserves enough of the configured budget for visible current/day parents.
+- Each coordinator refresh upgrades at most one provider-backed segment, newest
+  first. Remaining leaves stay local for that pass, so current/today parents are
+  rebuilt immediately and old catch-up cannot monopolize a provider process.
+- A closed-day provider synthesis waits until all active leaves have provider
+  revisions; this prevents repeated daily calls during gradual catch-up.
 - A local summary upgrades to a new immutable model revision when the selected
   provider later becomes ready. Budget fallback retries in the next budget
   window; transient invoked-provider failures use a cooldown.
