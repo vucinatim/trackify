@@ -16,6 +16,32 @@ enum ProviderGenerationLease {
             store: store, name: name, ownerID: ownerID,
             ownerKinds: ownerKinds, now: now, duration: duration)
     }
+
+    static func belongsToProcess(_ ownerID: String, processID: Int32) -> Bool {
+        ownerKinds.contains { ownerID.hasPrefix("\($0):\(processID):") }
+    }
+}
+
+public enum GenerationInterruptionRecovery {
+    /// Recovers generation records only when this process owns the exclusive
+    /// provider lease. Signal handling therefore cannot touch another app or
+    /// CLI process's active generation.
+    @discardableResult
+    public static func recoverOwnedRuns(
+        store: LedgerStore,
+        now: Date,
+        processID: Int32 = ProcessInfo.processInfo.processIdentifier
+    ) throws -> Bool {
+        guard let ownerID = try store.leaseOwner(name: ProviderGenerationLease.name),
+            ProviderGenerationLease.belongsToProcess(ownerID, processID: processID)
+        else { return false }
+        _ = try store.recoverInterruptedSummaryRuns(at: now)
+        _ = try store.recoverInterruptedReportRuns(at: now)
+        _ = try store.recoverInterruptedInternalProviderOperations(at: now)
+        try store.releaseLease(name: ProviderGenerationLease.name, ownerID: ownerID)
+        TrackifyChangeSignal.post(for: store.databaseURL, kind: .ledger)
+        return true
+    }
 }
 
 /// The single production boundary for launching a model CLI. It registers the

@@ -56,6 +56,54 @@ struct EvidenceCompilerTests {
         }
     }
 
+    @Test("Signal recovery is scoped to the generation lease owned by its process")
+    func signalRecoveryUsesExactLeaseOwner() async throws {
+        try await withCompilerStore { store in
+            let started = Date(timeIntervalSince1970: 1_754_294_400)
+            let run = SummaryRun(
+                id: SummaryRunID("signal-summary"), kind: .segment,
+                periodStart: started, periodEnd: started.addingTimeInterval(1_800),
+                selectionMode: .codex, requestedProvider: .codex,
+                effectiveProvider: .codex, sourceFingerprint: "signal",
+                queuedAt: started, startedAt: started, state: .running)
+            try store.save(summaryRun: run)
+            try store.beginInternalProviderOperation(
+                id: "signal-operation", provider: "codex",
+                purpose: "summary:\(run.id.rawValue)",
+                workingDirectory: URL(filePath: "/private/tmp/trackify-signal-test"),
+                startedAt: started)
+            let processID: Int32 = 42_424
+            let foreignOwner = "summaries:99:foreign"
+            #expect(
+                try store.acquireLease(
+                    name: ProviderGenerationLease.name, ownerID: foreignOwner,
+                    now: started, duration: 3_600))
+
+            #expect(
+                try !GenerationInterruptionRecovery.recoverOwnedRuns(
+                    store: store, now: started.addingTimeInterval(10), processID: processID))
+            #expect(try store.summaryRuns().first?.state == .running)
+            #expect(try store.internalProviderOperationStates() == ["running": 1])
+
+            try store.releaseLease(name: ProviderGenerationLease.name, ownerID: foreignOwner)
+            let owned = "summaries:\(processID):owned"
+            #expect(
+                try store.acquireLease(
+                    name: ProviderGenerationLease.name, ownerID: owned,
+                    now: started, duration: 3_600))
+
+            let recoveredAt = started.addingTimeInterval(20)
+            #expect(
+                try GenerationInterruptionRecovery.recoverOwnedRuns(
+                    store: store, now: recoveredAt, processID: processID))
+            let recovered = try #require(try store.summaryRuns().first)
+            #expect(recovered.state == .failed)
+            #expect(recovered.failureClass == .cancelled)
+            #expect(try store.internalProviderOperationStates() == ["failed": 1])
+            #expect(try store.leaseOwner(name: ProviderGenerationLease.name) == nil)
+        }
+    }
+
     @Test("Selection is deterministic, bounded, aliased, and representative across parallel projects")
     func deterministicParallelSelection() async throws {
         try await withCompilerStore { store in
@@ -719,6 +767,55 @@ struct EvidenceCompilerTests {
                     overlapping: day, kinds: [.day], includeSuperseded: true, limit: 20
                 ).first { $0.periodStart == day.start && $0.periodEnd == day.end })
             #expect(finalized.provider == .codex)
+        }
+    }
+
+    @Test("A bounded summary allowance upgrades the newest segment first")
+    func automaticSummaryRecoveryPrioritizesRecentWork() async throws {
+        try await withCompilerStore { store in
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+            let seed = Date(timeIntervalSince1970: 1_754_294_400)
+            let day = try #require(calendar.dateInterval(of: .day, for: seed))
+            let repository = try addRepository(
+                "summary-recovery-order", name: "Trackify", store: store, at: day.start)
+            let older = day.start.addingTimeInterval(9 * 3_600 + 5 * 60)
+            let newer = day.start.addingTimeInterval(10 * 3_600 + 5 * 60)
+            try addEvent(
+                "summary-recovery-older", kind: .gitWorkingTreeChanged,
+                repositoryID: repository.id, state: .inProgress,
+                payload: ["clean": "false", "changedFiles": "1"],
+                at: older, store: store)
+            try addEvent(
+                "summary-recovery-newer", kind: .gitWorkingTreeChanged,
+                repositoryID: repository.id, state: .inProgress,
+                payload: ["clean": "false", "changedFiles": "2"],
+                at: newer, store: store)
+
+            let counter = ProviderInvocationCounter()
+            let coordinator = SummaryCoordinator(
+                providerFactory: { _, _ in StructuredSummaryProvider(counter: counter) },
+                allowanceReader: NoProviderAllowanceReader(),
+                availableProvider: { _, _, _ in .codex })
+            let settings = TrackifySettings(
+                providerSelection: .codex,
+                generationBudgets: GenerationBudgets(
+                    maximumCallsPerDay: 1, dailyTokenLimit: 500_000,
+                    monthlyTokenLimit: 5_000_000),
+                automaticSummariesUseLLM: true)
+
+            let result = await coordinator.refresh(
+                store: store, settings: settings,
+                now: day.start.addingTimeInterval(10 * 3_600 + 40 * 60),
+                calendar: calendar, lookbackDays: 1)
+
+            #expect(result.issues.isEmpty)
+            #expect(await counter.value == 1)
+            let leaves = try store.summaries(kinds: [.segment], limit: 20)
+            let olderLeaf = try #require(leaves.first { $0.periodStart <= older && $0.periodEnd > older })
+            let newerLeaf = try #require(leaves.first { $0.periodStart <= newer && $0.periodEnd > newer })
+            #expect(olderLeaf.provider == nil)
+            #expect(newerLeaf.provider == .codex)
         }
     }
 

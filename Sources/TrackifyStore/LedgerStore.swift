@@ -2459,6 +2459,20 @@ public final class LedgerStore: @unchecked Sendable {
         }
     }
 
+    @discardableResult
+    public func recoverInterruptedInternalProviderOperations(at date: Date) throws -> Int {
+        try database.write { db in
+            try db.execute(
+                sql: """
+                    UPDATE internal_provider_operations
+                    SET state = 'failed', finished_at = ?
+                    WHERE state = 'running'
+                    """,
+                arguments: [date.timeIntervalSince1970])
+            return db.changesCount
+        }
+    }
+
     private static func setAuditIssue(
         db: Database,
         code: String,
