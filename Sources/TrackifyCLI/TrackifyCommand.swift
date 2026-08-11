@@ -91,9 +91,15 @@ private final class CLIInterruptHandler: @unchecked Sendable {
             return true
         }
         guard shouldStop else { return }
-        ProcessRunner.terminateAllRunningCommands()
+        ProcessRunner.beginProcessTermination()
         DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.2) {
             ProcessRunner.terminateAllRunningCommands(signal: SIGKILL)
+            if let paths = try? TrackifyPaths.default(),
+                let store = try? LedgerStore(databaseURL: paths.ledgerURL)
+            {
+                _ = try? GenerationInterruptionRecovery.recoverOwnedRuns(
+                    store: store, now: Date())
+            }
             Darwin._exit(128 + signal)
         }
     }

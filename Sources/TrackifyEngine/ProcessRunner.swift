@@ -93,6 +93,12 @@ public struct ProcessRunner: CommandRunning, InputCommandRunning {
         RunningProcessRegistry.shared.terminateAll(signal: signal)
     }
 
+    /// Prevents this terminating Trackify process from launching more provider
+    /// children and asks every already-registered child to stop.
+    public static func beginProcessTermination() {
+        RunningProcessRegistry.shared.beginTermination()
+    }
+
     public func run(
         executable: URL,
         arguments: [String],
@@ -232,9 +238,14 @@ private final class RunningProcessRegistry: @unchecked Sendable {
 
     private let lock = NSLock()
     private var processIDs = Set<pid_t>()
+    private var isTerminating = false
 
     func register(_ processID: pid_t) {
-        _ = lock.withLock { processIDs.insert(processID) }
+        let shouldTerminate = lock.withLock {
+            processIDs.insert(processID)
+            return isTerminating
+        }
+        if shouldTerminate { _ = Darwin.kill(processID, SIGTERM) }
     }
 
     func unregister(_ processID: pid_t) {
@@ -245,6 +256,16 @@ private final class RunningProcessRegistry: @unchecked Sendable {
         let running = lock.withLock { Array(processIDs) }
         for processID in running {
             _ = Darwin.kill(processID, signal)
+        }
+    }
+
+    func beginTermination() {
+        let running = lock.withLock {
+            isTerminating = true
+            return Array(processIDs)
+        }
+        for processID in running {
+            _ = Darwin.kill(processID, SIGTERM)
         }
     }
 }

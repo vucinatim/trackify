@@ -6,10 +6,10 @@ This document records reproducible V1 through Goal 5 checks separately from prod
 
 ## Completion hardening record — 2026-08-11
 
-- All 149 tests in 10 suites pass with code coverage enabled; strict formatting, fixture privacy, shell syntax, workflow YAML, Git whitespace, release build, and the schema-v2 two-day simulation pass.
+- All 151 tests in 10 suites pass; strict formatting, fixture privacy, shell syntax, workflow YAML, Git whitespace, release build, and the schema-v2 two-day simulation pass. The preceding 149-test integration commit also passed with code coverage enabled in CI.
 - Summary v5 uses semantic message origin/kind rather than display role, so human/delegated intent remains prominent while provider notifications and agent progress cannot be mislabeled as user requests. A 12-hour pacing regression proves 24 closed half-hour leaves use 24 provider calls, live current/day composition uses none, and the closed day adds exactly one synthesis call.
 - Default safeguards are 48 calls/day, 2 million tokens/day, 30 million tokens/month, and 3% of the observed weekly Codex allowance. Existing default settings migrate forward while explicit user values remain unchanged.
-- Ctrl-C/SIGTERM now terminates Trackify-owned provider children, and an actual CLI/provider signal drill exited 130 without an orphan. Interrupted summary runs recover to an explicit cancelled terminal record.
+- Ctrl-C/SIGTERM and app shutdown now terminate only Trackify-owned provider children. An actual CLI/provider signal drill exited 130 with no orphan, no surviving lease, and an immediate explicit cancelled terminal record. Catch-up generation spends bounded allowance on the newest eligible half-hour first.
 - The exact Universal 2 direct-release path passed for app, CLI, and every nested Sparkle component: hardened-runtime ad-hoc signing, deep validation, identifiers, architectures, version/origin, Ed25519 archive signing and verification, and generated appcast. The permanent public key is pinned in source and both release secrets are configured in the protected GitHub environment.
 - CI now requests a Swift 6 runner and validates the current simulation schema instead of the obsolete schema-v1 field set.
 
@@ -126,9 +126,8 @@ The final native bundle passed deep ad-hoc signature verification, installed at
 `0014_live_collector_status`, and reported healthy ledger/evidence state. No
 summary or report provider was invoked by live collection.
 
-The final local build used the machine's existing Apple Development identity
-rather than an ad-hoc signature. This gives successive development bundles a
-stable macOS privacy identity. Public releases use the separate ad-hoc-signing
+The final local development build uses an ad-hoc signature with a stable bundle
+identifier. Public releases use the separate hardened-runtime ad-hoc-signing
 and EdDSA-pinned Sparkle pipeline documented in `UPDATES.md`.
 
 An interrupted real Codex summary invocation was then used to validate restart
@@ -145,9 +144,16 @@ than leaving stale running state. Its app signature, doctor result, live process
 and zero-running summary/report checks pass; no `Trackify.app.previous` remains
 in the installation directory.
 
+Final audit build `0.3.0-dev` (`509`) additionally prioritizes the newest closed
+half-hour during bounded provider catch-up and owns generation as a cancellable
+app task. A live Codex drill selected `14:30–15:00` before older gaps; Ctrl-C
+terminated the exact child, exited 130, released the lease, and immediately
+changed the run to `failed/cancelled`. Doctor remained healthy, no running run
+or provider child remained, and the installer rollback was moved to Trash.
+
 ## Automated checks
 
-- `swift test --enable-code-coverage`: 149 tests across domain, store, engine, adapters, macOS application state, Goal 2 capability discovery, canonical evidence integrity, bounded rebuild coverage, Claude sidechain and compacted-context classification, Claude Desktop Code audit ingestion, live FSEvents planning and delivery, queue isolation/recovery, provider-process cancellation, dead-owner lease reclamation, interrupted-summary startup recovery, cross-process provider-generation coalescing, weekly allowance attribution, live menu budget state, budget-fallback recovery without retry churn, provider credit rates, budget migration, usage and budgets, versioned templates, independently managed scheduled reporters, pre-compilation repository-group scoping, run-specific instructions, repeated manual generation, canonical summary coverage/upgrades, internal-message filtering, privacy profiles, immutable artifacts, idempotent delivery, stable pagination, dense hourly and one-year/120-repository query scale, deterministic simulation, migrations, privacy, updates, and CLI surfaces.
+- `swift test`: 151 tests across domain, store, engine, adapters, macOS application state, Goal 2 capability discovery, canonical evidence integrity, bounded rebuild coverage, Claude sidechain and compacted-context classification, Claude Desktop Code audit ingestion, live FSEvents planning and delivery, queue isolation/recovery, provider-process cancellation, exact-owner signal recovery, newest-first bounded summary catch-up, dead-owner lease reclamation, interrupted-summary startup recovery, cross-process provider-generation coalescing, weekly allowance attribution, live menu budget state, budget-fallback recovery without retry churn, provider credit rates, budget migration, usage and budgets, versioned templates, independently managed scheduled reporters, pre-compilation repository-group scoping, run-specific instructions, repeated manual generation, canonical summary coverage/upgrades, internal-message filtering, privacy profiles, immutable artifacts, idempotent delivery, stable pagination, dense hourly and one-year/120-repository query scale, deterministic simulation, migrations, privacy, updates, and CLI surfaces.
 - `swift format lint --recursive --strict`: clean using the repository configuration.
 - `git diff --check`: clean.
 - `scripts/check-fixture-privacy.sh`: sanitized fixture structure and credential/path checks pass.

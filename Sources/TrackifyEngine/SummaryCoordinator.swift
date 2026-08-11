@@ -140,6 +140,7 @@ public struct SummaryCoordinator: Sendable {
         var unchanged = 0
         var issues: [String] = []
         for day in days {
+            guard !Task.isCancelled else { break }
             let cutoff = summaryCutoff(
                 for: day, now: now, today: today, calendar: calendar)
             guard cutoff > day.start else { continue }
@@ -152,7 +153,10 @@ public struct SummaryCoordinator: Sendable {
                 continue
             }
             var leaves: [WorkSummary] = []
-            for segment in segments {
+            // Spend a bounded provider allowance on the most recent work first.
+            // Leaves are sorted chronologically again before parent summaries are built.
+            for segment in segments.reversed() {
+                guard !Task.isCancelled else { break }
                 do {
                     let compilation = try compiler.compile(
                         store: store, range: segment, cutoff: min(cutoff, segment.end),
@@ -181,6 +185,7 @@ public struct SummaryCoordinator: Sendable {
                 }
             }
 
+            guard !Task.isCancelled else { break }
             leaves.sort { $0.periodStart < $1.periodStart }
             guard !leaves.isEmpty else { continue }
             if calendar.isDate(day.start, inSameDayAs: now) {

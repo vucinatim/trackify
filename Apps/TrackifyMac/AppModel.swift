@@ -92,6 +92,7 @@ final class AppModel: ObservableObject {
     let isUIValidation: Bool
     private let clock: any WallClock
     private var schedulerTask: Task<Void, Never>?
+    private var generationTask: Task<Void, Never>?
     private var isStarting = false
     private var liveCollectionRuntime: AppLiveCollectionRuntime?
     private var isRefreshingEvidence = false
@@ -180,6 +181,16 @@ final class AppModel: ObservableObject {
     func stop() {
         schedulerTask?.cancel()
         schedulerTask = nil
+        generationTask?.cancel()
+        generationTask = nil
+        ProcessRunner.beginProcessTermination()
+        if !isUIValidation,
+            let paths = try? TrackifyPaths.default(),
+            let store = try? LedgerStore(databaseURL: paths.ledgerURL)
+        {
+            _ = try? GenerationInterruptionRecovery.recoverOwnedRuns(
+                store: store, now: referenceNow)
+        }
         liveCollectionRuntime?.stop()
         liveCollectionRuntime = nil
     }
@@ -499,9 +510,7 @@ final class AppModel: ObservableObject {
                 snapshot.effectiveProvider != nil,
                 !snapshot.generationBudgetStatus.isPaused
             {
-                Task { [weak self] in
-                    await self?.generateSummariesAndReportsNow()
-                }
+                requestGeneration()
             }
         } catch {
             errorMessage = String(describing: error)
@@ -562,7 +571,7 @@ final class AppModel: ObservableObject {
             }
             isCollecting = false
             await refreshAfterBackgroundMutation()
-            Task { [weak self] in await self?.generateSummariesAndReportsNow() }
+            requestGeneration()
         } catch LocalCollectionError.collectionAlreadyRunning {
             isCollecting = false
             errorMessage = nil
@@ -579,22 +588,39 @@ final class AppModel: ObservableObject {
         defer { isSummarizing = false }
         do {
             let now = referenceNow
-            let issues = try await Task.detached(priority: .utility) { () -> [String] in
+            let worker = Task.detached(priority: .utility) { () -> [String] in
                 let paths = try TrackifyPaths.default()
                 let store = try LedgerStore(databaseURL: paths.ledgerURL)
                 let settings = try SettingsStore(fileURL: paths.settingsURL).load()
                 let summaries = await SummaryCoordinator().refresh(
                     store: store, settings: settings, now: now)
+                try Task.checkCancellation()
                 let queue = ReportQueue()
                 let enqueued = try queue.enqueueDueReports(
                     store: store, settings: settings, now: now)
                 let drained = await queue.drain(store: store, settings: settings)
                 return summaries.issues + enqueued.issues + drained.issues
-            }.value
+            }
+            let issues = try await withTaskCancellationHandler {
+                try await worker.value
+            } onCancel: {
+                worker.cancel()
+            }
             if let issue = issues.first { errorMessage = issue }
             await refreshAfterBackgroundMutation()
+        } catch is CancellationError {
+            return
         } catch {
             errorMessage = "Summaries or reports could not be generated: \(error)"
+        }
+    }
+
+    private func requestGeneration() {
+        guard generationTask == nil, !isUIValidation else { return }
+        generationTask = Task { [weak self] in
+            guard let self else { return }
+            await self.generateSummariesAndReportsNow()
+            self.generationTask = nil
         }
     }
 
