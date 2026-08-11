@@ -3,7 +3,7 @@
 Status: Implemented and locally validated
 Last updated: 2026-08-11
 
-Completion hardening also covers process lifecycle: CLI interruption and app shutdown terminate only Trackify-owned provider children, and exact lease ownership lets the terminating process immediately mark its interrupted runs terminal. Bounded summary catch-up prioritizes the newest eligible half-hour so recovery cannot starve current work behind old gaps.
+Completion hardening also covers process lifecycle: CLI interruption and app shutdown terminate only Trackify-owned provider children, and exact lease ownership lets the terminating process immediately mark its interrupted runs terminal. Bounded summary catch-up upgrades at most one newest eligible half-hour per refresh, so recovery cannot starve current work or hold a provider process while walking old gaps.
 
 Goal 5 makes Trackify feel continuously current without changing what counts as
 work. Supported Git, Codex, and Claude evidence should move the visible current

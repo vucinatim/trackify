@@ -15,7 +15,8 @@ The detailed command outputs and reference-machine measurements are recorded in 
 ## 2. Current validation baseline
 
 - Strict Swift formatting passes.
-- All 149 tests in 10 suites pass with code coverage enabled.
+- All 151 tests in 10 suites pass; the preceding 149-test integration revision
+  also passed with code coverage enabled in CI.
 - Fixture privacy, shell syntax, workflow YAML, and Git whitespace checks pass.
 - The deterministic two-day simulation produces 9 core events across 2 repositories and 4 sessions: 7 durable conversation messages and 2 commits, with one honestly unfinished session.
 - A normal CLI query against the preserved simulation ledger returns 3 active evidence hours, 2 LLM turns, 4 conversation messages, and one commit for its first day.
@@ -47,7 +48,7 @@ The detailed command outputs and reference-machine measurements are recorded in 
 | 17 | Surface collector failures and permissions | Proven locally | Collector issues persist, lightweight app refresh keeps degraded state visible, and `doctor` plus allowlisted diagnostic export are tested. |
 | 18 | Preserve the ledger through migrations | Proven locally | Migration tests create a private usable ledger and a mode-`0600` recoverable snapshot before applying a pending supported migration. |
 | 19 | Require no timers or report maintenance | Proven locally | Normal operation is evidence-driven and scheduled; the V1 app contains no task/timer/report-editing workflow. |
-| 20 | Generate through either authenticated Codex or Claude CLI | Implemented; external validation pending | Both provider commands, model defaults, isolation flags, bounded I/O, timeout behavior, and structured-response contracts are tested with process doubles. One live authenticated invocation per provider remains a release check. |
+| 20 | Generate through either authenticated Codex or Claude CLI | Implemented; external validation pending | Both provider commands, model defaults, isolation flags, bounded I/O, timeout behavior, and structured-response contracts are tested with process doubles. Live authenticated Codex generation passes with measured usage; a successful live Claude invocation on a machine with current Claude Code authentication remains a release check. |
 | 21 | Prevent report runs from modifying repositories or re-entering history | Proven locally | Codex is ephemeral/read-only/tool-isolated; Claude is non-persistent/tool-free/MCP-isolated; both run outside repositories, and persisted synthetic internal sessions are excluded in a defense-in-depth test. |
 | 22 | Install, bootstrap, diagnose, and open from one stable agent link | Implemented; external validation pending | Stable GitHub Pages installer protocol, verified install/repair/uninstall scripts, bootstrap CLI, and release workflow exist. The promise cannot pass until an actual GitHub release is installed from that public endpoint and its one-time non-notarized first-open flow is exercised. |
 | 23 | Recommend bounded primary groups | Proven locally | Bootstrap inspection recognizes `zerodays` as Work and `MyProjects`/Projects/Developer as Personal, reports only aggregate repository/history counts, and emits bounded provider-call/token ceilings. |

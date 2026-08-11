@@ -7,9 +7,9 @@ This document records reproducible V1 through Goal 5 checks separately from prod
 ## Completion hardening record — 2026-08-11
 
 - All 151 tests in 10 suites pass; strict formatting, fixture privacy, shell syntax, workflow YAML, Git whitespace, release build, and the schema-v2 two-day simulation pass. The preceding 149-test integration commit also passed with code coverage enabled in CI.
-- Summary v5 uses semantic message origin/kind rather than display role, so human/delegated intent remains prominent while provider notifications and agent progress cannot be mislabeled as user requests. A 12-hour pacing regression proves 24 closed half-hour leaves use 24 provider calls, live current/day composition uses none, and the closed day adds exactly one synthesis call.
+- Summary v5 uses semantic message origin/kind rather than display role, so human/delegated intent remains prominent while provider notifications and agent progress cannot be mislabeled as user requests. A 12-hour pacing regression proves each refresh upgrades at most one newest half-hour leaf, live current/day composition uses no provider call, and the closed day receives exactly one provider synthesis only after all leaves are upgraded.
 - Default safeguards are 48 calls/day, 2 million tokens/day, 30 million tokens/month, and 3% of the observed weekly Codex allowance. Existing default settings migrate forward while explicit user values remain unchanged.
-- Ctrl-C/SIGTERM and app shutdown now terminate only Trackify-owned provider children. An actual CLI/provider signal drill exited 130 with no orphan, no surviving lease, and an immediate explicit cancelled terminal record. Catch-up generation spends bounded allowance on the newest eligible half-hour first.
+- Ctrl-C/SIGTERM and app shutdown now terminate only Trackify-owned provider children. An actual CLI/provider signal drill exited 130 with no orphan, no surviving lease, and an immediate explicit cancelled terminal record. Catch-up spends allowance on at most one newest eligible half-hour per refresh, then rebuilds visible parents locally without waiting behind old gaps.
 - The exact Universal 2 direct-release path passed for app, CLI, and every nested Sparkle component: hardened-runtime ad-hoc signing, deep validation, identifiers, architectures, version/origin, Ed25519 archive signing and verification, and generated appcast. The permanent public key is pinned in source and both release secrets are configured in the protected GitHub environment.
 - CI now requests a Swift 6 runner and validates the current simulation schema instead of the obsolete schema-v1 field set.
 
@@ -150,6 +150,19 @@ app task. A live Codex drill selected `14:30–15:00` before older gaps; Ctrl-C
 terminated the exact child, exited 130, released the lease, and immediately
 changed the run to `failed/cancelled`. Doctor remained healthy, no running run
 or provider child remained, and the installer rollback was moved to Trash.
+
+Installed build `0.3.0-dev` (`510`) applies the final pacing contract: one real
+production-ledger refresh upgraded one provider-backed leaf, rebuilt the local
+leaf/current/day ancestry, returned zero issues, and exited normally in 18.4
+seconds. The same backlog had kept the pre-cap refresh alive for roughly 47
+minutes. Usage moved from 41 to 42 of 48 daily calls, no generation remained
+running, and intentional deferred leaves are recorded as `localOnly`, not as a
+provider outage.
+
+Installed build `0.3.0-dev` (`511`) contains the exact validated source plus the
+final `localOnly` telemetry clarification. Its deep bundle signature passes,
+doctor remains healthy, and no summary run, report run, provider child, or
+installer rollback is left active.
 
 ## Automated checks
 

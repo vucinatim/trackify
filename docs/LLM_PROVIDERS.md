@@ -1,6 +1,6 @@
 # Codex and Claude Provider Integration
 
-Status: Goal 2 implementation complete; live release reconciliation pending
+Status: Goal 2 implementation complete; release validation tracked separately
 Last verified against official CLI documentation: 2026-08-05
 
 ## 1. Purpose
@@ -595,6 +595,8 @@ compiler retained for configurable outputs. Automatic interpretation now uses
 the canonical summary service:
 
 - closed active half-hours are the only model-backed leaves;
+- each refresh upgrades at most one model-backed half-hour, newest first, while
+  deterministic parents and remaining local leaves complete in the same pass;
 - every eligible user message and commit message is included completely across
   bounded chunks;
 - assistant responses are capped at 1,200 characters per response and carry
@@ -607,6 +609,8 @@ the canonical summary service:
   then deterministically restores any evidenced project omitted by the model;
 - current/day parents consume all complete child summaries in chronological
   order;
+- a closed-day model synthesis waits until all active leaves have model
+  revisions, so gradual catch-up cannot regenerate the day on every pass;
 - provider calls, measured tokens, unknown/known costs, failures, and local
   fallbacks are persisted in `summary_runs` and aggregated with report usage;
 - provider unavailability never prevents a summary revision or evidence

@@ -139,6 +139,7 @@ public struct SummaryCoordinator: Sendable {
         var generated: [SummaryID] = []
         var unchanged = 0
         var issues: [String] = []
+        var generatedProviderSegment = false
         for day in days {
             guard !Task.isCancelled else { break }
             let cutoff = summaryCutoff(
@@ -158,6 +159,9 @@ public struct SummaryCoordinator: Sendable {
             for segment in segments.reversed() {
                 guard !Task.isCancelled else { break }
                 do {
+                    let segmentProvider = generatedProviderSegment ? nil : readyProvider
+                    let segmentMode: ProviderSelectionMode =
+                        readyProvider != nil && segmentProvider == nil ? .localOnly : preferredMode
                     let compilation = try compiler.compile(
                         store: store, range: segment, cutoff: min(cutoff, segment.end),
                         calendar: calendar)
@@ -165,17 +169,18 @@ public struct SummaryCoordinator: Sendable {
                     if let existing = try reusableSummary(
                         store: store, settings: settings, kind: .segment,
                         compilation: compilation,
-                        preferredMode: preferredMode, readyProvider: readyProvider,
+                        preferredMode: segmentMode, readyProvider: segmentProvider,
                         recoveryBudgetStatus: recoveryBudgetStatus, now: now,
                         calendar: calendar)
                     {
                         leaves.append(existing)
                         unchanged += 1
                     } else {
+                        generatedProviderSegment = generatedProviderSegment || segmentProvider != nil
                         let summary = try await generate(
                             store: store, settings: settings, kind: .segment,
                             compilation: compilation, children: [],
-                            preferredMode: preferredMode, readyProvider: readyProvider,
+                            preferredMode: segmentMode, readyProvider: segmentProvider,
                             now: now, calendar: calendar)
                         leaves.append(summary)
                         generated.append(summary.id)
@@ -212,12 +217,13 @@ public struct SummaryCoordinator: Sendable {
             do {
                 let parentRange = DateInterval(start: day.start, end: cutoff)
                 let isOpenDay = calendar.isDate(day.start, inSameDayAs: now)
+                let canSynthesizeClosedDay = !isOpenDay && leaves.allSatisfy { $0.provider != nil }
                 let parent = try await generateParentIfChanged(
                     store: store, settings: settings, kind: .day,
                     range: parentRange, children: leaves,
-                    preferredMode: isOpenDay ? .localOnly : preferredMode,
-                    readyProvider: isOpenDay ? nil : readyProvider,
-                    recoveryBudgetStatus: isOpenDay ? nil : recoveryBudgetStatus,
+                    preferredMode: canSynthesizeClosedDay ? preferredMode : .localOnly,
+                    readyProvider: canSynthesizeClosedDay ? readyProvider : nil,
+                    recoveryBudgetStatus: canSynthesizeClosedDay ? recoveryBudgetStatus : nil,
                     now: now, calendar: calendar)
                 if let parent { generated.append(parent.id) } else { unchanged += 1 }
             } catch {
