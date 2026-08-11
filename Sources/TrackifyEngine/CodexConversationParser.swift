@@ -2,7 +2,7 @@ import Foundation
 import TrackifyDomain
 
 public struct CodexConversationParser: Sendable {
-    public static let adapterVersion = 5
+    public static let adapterVersion = 6
 
     private struct PendingMessage {
         let sourceRecordID: String?
@@ -171,7 +171,7 @@ public struct CodexConversationParser: Sendable {
                     case "agent_reasoning", "token_count", "thread_settings_applied", "patch_apply_end", "web_search_end",
                         "context_compacted",
                         "image_generation_end", "exec_command_end", "mcp_tool_call_end",
-                        "thread_goal_updated":
+                        "thread_goal_updated", "thread_rolled_back":
                         pendingStructuralRecords.append(
                             PendingStructuralRecord(
                                 sourceRecordID: (payload["call_id"] as? String) ?? turnID,

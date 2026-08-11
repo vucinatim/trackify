@@ -17,6 +17,7 @@ enum LedgerSchema {
     static let evidenceCoverageMigration = "0012_evidence_coverage"
     static let providerAllowanceMigration = "0013_provider_allowance_attribution"
     static let liveCollectorMigration = "0014_live_collector_status"
+    static let codexThreadRollbackMigration = "0015_codex_thread_rollback"
     static let messageDuplicateTolerance = 0.5
 
     static var migrator: DatabaseMigrator {
@@ -1259,7 +1260,68 @@ enum LedgerSchema {
                     WHERE service = 'collector';
                     """)
         }
+        migrator.registerMigration(codexThreadRollbackMigration) { db in
+            try migrateCodexThreadRollbacks(db)
+        }
         return migrator
+    }
+
+    private static func migrateCodexThreadRollbacks(_ db: Database) throws {
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+                SELECT id, session_id, source_record_id, source_turn_id, occurred_at
+                FROM conversation_records
+                WHERE source = 'codex'
+                  AND source_record_type = 'event_msg.unknown:thread_rolled_back'
+                """)
+        for row in rows {
+            let oldID: String = row["id"]
+            let sessionID: String = row["session_id"]
+            let sourceRecordID: String? = row["source_record_id"]
+            let sourceIdentity: String
+            if let sourceRecordID {
+                sourceIdentity = "event_msg.thread_rolled_back\u{1f}\(sourceRecordID)"
+            } else {
+                let sourceTurnID: String? = row["source_turn_id"]
+                let occurredAt: Double? = row["occurred_at"]
+                sourceIdentity = [
+                    "event_msg.thread_rolled_back", sourceTurnID ?? "", "",
+                    occurredAt.map { String($0) } ?? "", "",
+                ].joined(separator: "\u{1f}")
+            }
+            let newID = StableHash.sha256(
+                "conversation-record:codex:\(sessionID):\(sourceIdentity)")
+            if try String.fetchOne(
+                db, sql: "SELECT id FROM conversation_records WHERE id = ?",
+                arguments: [newID]) != nil
+            {
+                try db.execute(
+                    sql: "DELETE FROM conversation_records WHERE id = ?",
+                    arguments: [oldID])
+            } else {
+                try db.execute(
+                    sql: """
+                        UPDATE conversation_records
+                        SET id = ?, source_record_type = 'event_msg.thread_rolled_back',
+                            origin = 'system', semantic_kind = 'control',
+                            disposition = 'control', canonical_state = 'primary',
+                            classification_reason = 'codex-known-transport-event',
+                            adapter_version = 6
+                        WHERE id = ?
+                        """,
+                    arguments: [newID, oldID])
+            }
+        }
+        try db.execute(
+            sql: """
+                DELETE FROM evidence_quality_issues
+                WHERE source_key = 'adapter:codex' AND code = 'unresolved-record'
+                  AND NOT EXISTS (
+                      SELECT 1 FROM conversation_records
+                      WHERE source = 'codex' AND disposition = 'unresolved'
+                  )
+                """)
     }
 
     private static func areDuplicateTimes(_ lhs: Double?, _ rhs: Double?) -> Bool {

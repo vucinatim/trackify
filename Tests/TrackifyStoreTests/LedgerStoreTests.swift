@@ -154,6 +154,76 @@ struct LedgerStoreTests {
         #expect(permissions?.intValue == 0o600)
     }
 
+    @Test("Codex rollback migration repairs the legacy unresolved projection")
+    func codexRollbackMigrationRepair() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "trackify-rollback-migration-tests-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let databaseURL = directory.appending(path: "trackify.sqlite")
+        do { _ = try LedgerStore(databaseURL: databaseURL) }
+
+        let occurredAt = Date(timeIntervalSince1970: 1_786_470_400).timeIntervalSince1970
+        let queue = try DatabaseQueue(path: databaseURL.path)
+        try queue.write { db in
+            try db.execute(
+                sql: "DELETE FROM grdb_migrations WHERE identifier = '0015_codex_thread_rollback'")
+            try db.execute(
+                sql: """
+                    INSERT INTO sessions
+                        (id, source, source_session_id, started_at, last_observed_at, state)
+                    VALUES ('rollback-session', 'codex', 'rollback-session', ?, ?, 'completed')
+                    """,
+                arguments: [occurredAt, occurredAt])
+            try db.execute(
+                sql: """
+                    INSERT INTO conversation_records (
+                        id, source, session_id, source_record_id, source_record_type,
+                        source_turn_id, occurred_at, observed_at, is_meta, is_sidechain,
+                        origin, semantic_kind, disposition, canonical_state,
+                        classification_version, classification_reason, adapter_version)
+                    VALUES (
+                        'legacy-rollback', 'codex', 'rollback-session', 'turn-1',
+                        'event_msg.unknown:thread_rolled_back', 'turn-1', ?, ?, 0, 0,
+                        'system', 'unknown', 'unresolved', 'unresolved', 1,
+                        'codex-unknown-event-message', 5)
+                    """,
+                arguments: [occurredAt, occurredAt])
+            try db.execute(
+                sql: """
+                    INSERT INTO evidence_quality_issues (
+                        id, source, source_key, code, detail, issue_count,
+                        first_observed_at, last_observed_at, affects_work_metrics)
+                    VALUES (
+                        'rollback-issue', 'codex', 'adapter:codex', 'unresolved-record',
+                        'fixture', 1, ?, ?, 1)
+                    """,
+                arguments: [occurredAt, occurredAt])
+        }
+
+        let migrated = try LedgerStore(databaseURL: databaseURL)
+        let expectedID = StableHash.sha256(
+            "conversation-record:codex:rollback-session:event_msg.thread_rolled_back\u{1f}turn-1")
+        let repaired = try DatabaseQueue(path: databaseURL.path).read { db in
+            try Row.fetchOne(
+                db,
+                sql: """
+                    SELECT id, source_record_type, semantic_kind, disposition,
+                           canonical_state, classification_reason, adapter_version
+                    FROM conversation_records WHERE id = ?
+                    """,
+                arguments: [expectedID])
+        }
+        #expect(repaired?["source_record_type"] as String? == "event_msg.thread_rolled_back")
+        #expect(repaired?["semantic_kind"] as String? == "control")
+        #expect(repaired?["disposition"] as String? == "control")
+        #expect(repaired?["canonical_state"] as String? == "primary")
+        #expect(repaired?["classification_reason"] as String? == "codex-known-transport-event")
+        #expect(repaired?["adapter_version"] as Int? == 6)
+        #expect(try migrated.evidenceQuality().unresolvedRecordCount == 0)
+        #expect(try migrated.evidenceQuality().state == .healthy)
+    }
+
     @Test("Message-alias migration repairs legacy duplicate normalized messages")
     func messageAliasMigrationRepair() throws {
         let directory = FileManager.default.temporaryDirectory
@@ -387,7 +457,7 @@ struct LedgerStoreTests {
                         "0008_report_schedules", "0009_canonical_summaries",
                         "0010_canonical_evidence", "0011_canonical_evidence_lookups",
                         "0012_evidence_coverage", "0013_provider_allowance_attribution",
-                        "0014_live_collector_status",
+                        "0014_live_collector_status", "0015_codex_thread_rollback",
                     ])
             #expect(try store.counts() == LedgerCounts(repositories: 0, commits: 0, sessions: 0, messages: 0, events: 0, observations: 0))
             #expect(try store.health().integrity == "ok")
