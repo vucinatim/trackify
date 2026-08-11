@@ -233,9 +233,8 @@ public struct ReportQueue: Sendable {
         let ownerID = "reports:\(ProcessInfo.processInfo.processIdentifier):\(UUID().uuidString)"
         do {
             guard
-                try store.acquireLease(
-                    name: ProviderGenerationLease.name, ownerID: ownerID,
-                    now: now(), duration: 240)
+                try ProviderGenerationLease.acquire(
+                    store: store, ownerID: ownerID, now: now(), duration: 240)
             else { return ReportQueueResult() }
         } catch {
             return ReportQueueResult(issues: ["Could not acquire report queue: \(error.localizedDescription)"])
@@ -245,19 +244,7 @@ public struct ReportQueue: Sendable {
         var completed: [ArtifactID] = []
         var issues: [String] = []
         do {
-            for run in try store.recoverInterruptedReportRuns(at: now()) where run.intent != .providerTest {
-                guard let storedRecipe = try store.recipeVersion(id: run.recipeVersionID) else { continue }
-                let recipe = run.configuration?.recipeVersion(basedOn: storedRecipe) ?? storedRecipe
-                let packet = try evidencePacket(
-                    store: store,
-                    range: DateInterval(start: run.periodStart, end: run.periodEnd),
-                    cutoff: run.periodEnd, recipe: recipe)
-                let artifact = try deterministicArtifact(
-                    run: run, recipe: recipe, packet: packet,
-                    summary: generator.deterministicSummary(packet), failureClass: .cancelled,
-                    failureDetail: run.failureDetail, store: store, now: now())
-                completed.append(artifact.id)
-            }
+            completed += try recoverInterruptedRunsHoldingLease(store: store, now: now())
         } catch {
             issues.append("Could not recover an interrupted report run: \(error.localizedDescription)")
         }
@@ -276,6 +263,21 @@ public struct ReportQueue: Sendable {
         return ReportQueueResult(completed: completed, issues: issues)
     }
 
+    public func recoverInterruptedRuns(
+        store: LedgerStore,
+        now: Date
+    ) throws -> [ArtifactID] {
+        let ownerID = "reports:\(ProcessInfo.processInfo.processIdentifier):\(UUID().uuidString)"
+        guard
+            try ProviderGenerationLease.acquire(
+                store: store, ownerID: ownerID, now: now, duration: 60)
+        else {
+            return []
+        }
+        defer { try? store.releaseLease(name: ProviderGenerationLease.name, ownerID: ownerID) }
+        return try recoverInterruptedRunsHoldingLease(store: store, now: now)
+    }
+
     public func testProvider(
         _ providerID: SummaryProviderID,
         store: LedgerStore,
@@ -284,8 +286,8 @@ public struct ReportQueue: Sendable {
     ) async throws -> ReportRun {
         let ownerID = "provider-test:\(ProcessInfo.processInfo.processIdentifier):\(UUID().uuidString)"
         guard
-            try store.acquireLease(
-                name: ProviderGenerationLease.name, ownerID: ownerID, now: now, duration: 60)
+            try ProviderGenerationLease.acquire(
+                store: store, ownerID: ownerID, now: now, duration: 60)
         else {
             throw LedgerStoreError.unsupportedValue(
                 type: "ProviderTest", value: "another report run is active")
@@ -350,6 +352,27 @@ public struct ReportQueue: Sendable {
                 running, class: failure.0, detail: failure.1, store: store, now: Date())
         }
         return try store.reportRun(id: enqueued.id) ?? enqueued
+    }
+
+    private func recoverInterruptedRunsHoldingLease(
+        store: LedgerStore,
+        now: Date
+    ) throws -> [ArtifactID] {
+        var recovered: [ArtifactID] = []
+        for run in try store.recoverInterruptedReportRuns(at: now) where run.intent != .providerTest {
+            guard let storedRecipe = try store.recipeVersion(id: run.recipeVersionID) else { continue }
+            let recipe = run.configuration?.recipeVersion(basedOn: storedRecipe) ?? storedRecipe
+            let packet = try evidencePacket(
+                store: store,
+                range: DateInterval(start: run.periodStart, end: run.periodEnd),
+                cutoff: run.periodEnd, recipe: recipe)
+            let artifact = try deterministicArtifact(
+                run: run, recipe: recipe, packet: packet,
+                summary: generator.deterministicSummary(packet), failureClass: .cancelled,
+                failureDetail: run.failureDetail, store: store, now: now)
+            recovered.append(artifact.id)
+        }
+        return recovered
     }
 
     private func execute(

@@ -5,7 +5,7 @@ Trackify is a passive, native macOS development-work ledger. It observes local G
 The same local ledger is available through the macOS menu-bar application and a first-class `trackify` CLI for coding agents.
 
 > [!IMPORTANT]
-> Trackify V1 through Goal 5 are implemented and locally validated. Public distribution is a separate later milestone requiring the project owner's signing and notarization credentials.
+> Trackify V1 through Goal 5 are implemented and locally validated. The first public release and live update drill remain release operations; Trackify intentionally uses an ad-hoc-signed, non-notarized first install and EdDSA-signed Sparkle updates rather than paid Apple Developer ID distribution.
 
 ## Principles
 
@@ -118,7 +118,7 @@ scripts/uninstall-local.sh                 # keeps the ledger
 scripts/uninstall-local.sh --delete-data   # explicitly trashes the ledger too
 ```
 
-`TRACKIFY_ALLOW_UNSIGNED=1` is for local development bundles only. Published direct releases must pass the built-in Developer ID and Gatekeeper verification.
+`TRACKIFY_ALLOW_UNSIGNED=1` is for local development bundles only. Published direct releases must pass deep code-signature, identifier, embedded update-key, manifest-signature, and checksum verification. They are not Apple-notarized, so first launch may require macOS's one-time **Open Anyway** confirmation.
 
 The implementation sequence and remaining gates are tracked in [V1_READINESS.md](docs/V1_READINESS.md).
 

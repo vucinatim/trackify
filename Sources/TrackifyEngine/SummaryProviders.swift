@@ -544,6 +544,9 @@ private enum ProviderPrompt {
             Preserve the supplied period state. Mention unfinished or waiting work plainly.
             Treat user messages as the clearest evidence of requested goals, questions, and decisions.
             Treat assistant messages as progress claims or implementation context, not proof of completion.
+            Use messageOrigin and messageSemanticKind rather than role alone: only human or delegated-agent
+            intent/steering belongs in intents. Agent progress and provider transport notifications are not user
+            requests; summarize useful progress without reproducing transport markup such as XML envelopes.
             Pair intent and outcomes only when their session or repository association supports that relationship.
             Pair the requested intent with concrete commits, tests, changes, and the final observed state.
             Evidence identifiers are short packet-local aliases. Cite only aliases supplied in events or priorSummaries.

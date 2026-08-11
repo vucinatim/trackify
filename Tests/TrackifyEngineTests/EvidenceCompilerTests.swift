@@ -7,6 +7,55 @@ import TrackifyStore
 
 @Suite("Smart evidence compiler")
 struct EvidenceCompilerTests {
+    @Test("Startup recovery reclaims only an abandoned generation lease")
+    func startupSummaryRecovery() async throws {
+        try await withCompilerStore { store in
+            let started = Date(timeIntervalSince1970: 1_754_294_400)
+            let abandoned = SummaryRun(
+                id: SummaryRunID("abandoned-summary"), kind: .segment,
+                periodStart: started, periodEnd: started.addingTimeInterval(1_800),
+                selectionMode: .codex, requestedProvider: .codex,
+                effectiveProvider: .codex, sourceFingerprint: "abandoned",
+                queuedAt: started, startedAt: started, state: .running)
+            try store.save(summaryRun: abandoned)
+            #expect(
+                try store.acquireLease(
+                    name: ProviderGenerationLease.name,
+                    ownerID: "summaries:2147483000:abandoned",
+                    now: started, duration: 3_600))
+
+            let recoveredAt = started.addingTimeInterval(30)
+            let recovered = try SummaryCoordinator.recoverInterruptedRuns(
+                store: store, now: recoveredAt)
+
+            #expect(recovered.map(\.id) == [abandoned.id])
+            #expect(recovered[0].state == .failed)
+            #expect(recovered[0].failureClass == .cancelled)
+            #expect(try store.leaseOwner(name: ProviderGenerationLease.name) == nil)
+
+            let active = SummaryRun(
+                id: SummaryRunID("active-summary"), kind: .segment,
+                periodStart: started, periodEnd: started.addingTimeInterval(1_800),
+                selectionMode: .codex, requestedProvider: .codex,
+                effectiveProvider: .codex, sourceFingerprint: "active",
+                queuedAt: started, startedAt: started, state: .running)
+            try store.save(summaryRun: active)
+            let activeOwner =
+                "summaries:\(ProcessInfo.processInfo.processIdentifier):active"
+            #expect(
+                try store.acquireLease(
+                    name: ProviderGenerationLease.name, ownerID: activeOwner,
+                    now: started, duration: 3_600))
+
+            #expect(
+                try SummaryCoordinator.recoverInterruptedRuns(
+                    store: store, now: recoveredAt
+                ).isEmpty)
+            #expect(try store.summaryRuns().first { $0.id == active.id }?.state == .running)
+            try store.releaseLease(name: ProviderGenerationLease.name, ownerID: activeOwner)
+        }
+    }
+
     @Test("Selection is deterministic, bounded, aliased, and representative across parallel projects")
     func deterministicParallelSelection() async throws {
         try await withCompilerStore { store in
@@ -432,7 +481,8 @@ struct EvidenceCompilerTests {
             #expect(initial.issues.isEmpty)
             #expect(initial.generated.count == 4)
             let current = try #require(try store.latestSummary(kind: .current))
-            #expect(current.content.compactNarrative == "Dense menu line.")
+            #expect(current.provider == nil)
+            #expect(current.content.compactNarrative.contains("Trackify"))
             #expect(Set(current.content.projectSections.map(\.project)) == ["Trackify", "ClientApp"])
             #expect(current.childSummaryIDs.count == 2)
             #expect(current.coverage.isComplete)
@@ -441,7 +491,7 @@ struct EvidenceCompilerTests {
                 store: store, settings: settings, now: now,
                 calendar: calendar, lookbackDays: 1)
             #expect(unchanged.generated.isEmpty)
-            #expect(await counter.value == 4)
+            #expect(await counter.value == 2)
 
             try addEvent(
                 "late-summary-work", kind: .testFinished,
@@ -455,7 +505,7 @@ struct EvidenceCompilerTests {
             #expect(revised.generated.count == 3)
             let segments = try store.summaries(kinds: [.segment], limit: 20)
             #expect(segments.map(\.revision).max() == 2)
-            #expect(await counter.value == 7)
+            #expect(await counter.value == 3)
 
             let reportPeriod = try #require(calendar.dateInterval(of: .day, for: now))
             let run = try ReportQueue().enqueueOnDemand(
@@ -506,9 +556,10 @@ struct EvidenceCompilerTests {
                 now: now, calendar: calendar, lookbackDays: 1)
             #expect(upgraded.issues.isEmpty)
             let modelCurrent = try #require(try store.latestSummary(kind: .current))
-            #expect(modelCurrent.provider == .codex)
+            #expect(modelCurrent.provider == nil)
             #expect(modelCurrent.revision == localCurrent.revision + 1)
-            #expect(await counter.value > 0)
+            #expect(try store.latestSummary(kind: .segment)?.provider == .codex)
+            #expect(await counter.value == 1)
         }
     }
 
@@ -564,8 +615,110 @@ struct EvidenceCompilerTests {
                 store: store, settings: recovered, now: now,
                 calendar: calendar, lookbackDays: 1)
             #expect(upgraded.issues.isEmpty)
-            #expect(try store.latestSummary(kind: .current)?.provider == .codex)
-            #expect(await counter.value > 0)
+            #expect(try store.latestSummary(kind: .current)?.provider == nil)
+            #expect(try store.latestSummary(kind: .segment)?.provider == .codex)
+            #expect(await counter.value == 1)
+        }
+    }
+
+    @Test("Local summaries distinguish agent progress from developer intent")
+    func localSummaryUsesSemanticIntent() async throws {
+        try await withCompilerStore { store in
+            let day = Date(timeIntervalSince1970: 1_754_284_800)
+            let now = day.addingTimeInterval(10 * 3_600 + 10 * 60)
+            let repository = try addRepository(
+                "semantic-summary", name: "Trackify", store: store, at: day)
+            let sessionID = SessionID("semantic-summary-session")
+            try store.upsert(
+                session: ConversationSession(
+                    id: sessionID, source: .claude, sourceSessionID: sessionID.rawValue,
+                    startedAt: day, lastObservedAt: now, state: .inProgress))
+            try addMessage(
+                "semantic-human", text: "Polish automatic summaries", role: .user,
+                provenance: ConversationProvenance(
+                    origin: .human, semanticKind: .intent, disposition: .work,
+                    classificationReason: "fixture-human-intent"),
+                repositoryID: repository.id, sessionID: sessionID,
+                at: day.addingTimeInterval(9 * 3_600 + 1 * 60), store: store)
+            let notification =
+                "<task-notification><status>completed</status><summary>Background agent finished</summary></task-notification>"
+            try addMessage(
+                "semantic-progress", text: notification, role: .user,
+                provenance: ConversationProvenance(
+                    origin: .agent, semanticKind: .progress, disposition: .work,
+                    classificationReason: "claude-agent-task-notification"),
+                repositoryID: repository.id, sessionID: sessionID,
+                at: day.addingTimeInterval(9 * 3_600 + 2 * 60), store: store)
+
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+            let result = await SummaryCoordinator().refresh(
+                store: store,
+                settings: TrackifySettings(providerSelection: .localOnly),
+                now: now, calendar: calendar, lookbackDays: 1)
+            #expect(result.issues.isEmpty)
+            let segment = try #require(try store.latestSummary(kind: .segment))
+            #expect(segment.coverage.eligibleEventCount == 2)
+            #expect(segment.content.intents == ["Polish automatic summaries"])
+            #expect(segment.content.projectSections.first?.intents == ["Polish automatic summaries"])
+            let rendered = String(decoding: try JSONEncoder().encode(segment.content), as: UTF8.self)
+            #expect(!rendered.contains("task-notification"))
+            #expect(!rendered.contains("Background agent finished"))
+        }
+    }
+
+    @Test("An active day invokes the provider only for leaves and one closed-day synthesis")
+    func automaticSummaryPacing() async throws {
+        try await withCompilerStore { store in
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+            let seed = Date(timeIntervalSince1970: 1_754_294_400)
+            let day = try #require(calendar.dateInterval(of: .day, for: seed))
+            let repository = try addRepository(
+                "summary-pacing", name: "Trackify", store: store, at: day.start)
+            for index in 0..<24 {
+                try addEvent(
+                    "summary-pacing-\(index)", kind: .gitWorkingTreeChanged,
+                    repositoryID: repository.id, state: .inProgress,
+                    payload: ["clean": "false", "changedFiles": "\(index + 1)"],
+                    at: day.start.addingTimeInterval(
+                        7 * 3_600 + Double(index * 1_800) + 60),
+                    store: store)
+            }
+            let counter = ProviderInvocationCounter()
+            let coordinator = SummaryCoordinator(
+                providerFactory: { _, _ in StructuredSummaryProvider(counter: counter) },
+                allowanceReader: NoProviderAllowanceReader(),
+                availableProvider: { _, _, _ in .codex })
+            let settings = TrackifySettings(
+                providerSelection: .codex,
+                generationBudgets: GenerationBudgets(
+                    maximumCallsPerDay: 48, dailyTokenLimit: 2_000_000,
+                    monthlyTokenLimit: 30_000_000),
+                automaticSummariesUseLLM: true)
+
+            let openDay = await coordinator.refresh(
+                store: store, settings: settings,
+                now: day.start.addingTimeInterval(19 * 3_600 + 10 * 60),
+                calendar: calendar, lookbackDays: 1)
+            #expect(openDay.issues.isEmpty)
+            #expect(openDay.generated.count == 26)
+            #expect(await counter.value == 24)
+            #expect(try store.summaries(kinds: [.segment], limit: 100).count == 24)
+            #expect(try store.latestSummary(kind: .current)?.provider == nil)
+            #expect(try store.latestSummary(kind: .day)?.provider == nil)
+
+            let closedDay = await coordinator.refresh(
+                store: store, settings: settings,
+                now: day.end.addingTimeInterval(3_600),
+                calendar: calendar, lookbackDays: 2)
+            #expect(closedDay.issues.isEmpty)
+            #expect(await counter.value == 25)
+            let finalized = try #require(
+                try store.summaries(
+                    overlapping: day, kinds: [.day], includeSuperseded: true, limit: 20
+                ).first { $0.periodStart == day.start && $0.periodEnd == day.end })
+            #expect(finalized.provider == .codex)
         }
     }
 
@@ -681,6 +834,7 @@ private func addMessage(
     _ id: String,
     text: String,
     role: MessageRole,
+    provenance: ConversationProvenance = ConversationProvenance(),
     repositoryID: RepositoryID,
     sessionID: SessionID,
     at date: Date,
@@ -693,7 +847,8 @@ private func addMessage(
         role: role,
         occurredAt: date,
         normalizedText: text,
-        fingerprint: "\(id)-fingerprint"
+        fingerprint: "\(id)-fingerprint",
+        provenance: provenance
     )
     try store.upsert(message: message)
     try addEvent(

@@ -1,4 +1,5 @@
 import ArgumentParser
+import Darwin
 import Foundation
 import TrackifyDomain
 import TrackifyEngine
@@ -54,7 +55,48 @@ public struct TrackifyCommand: AsyncParsableCommand {
         defaultSubcommand: Status.self
     )
 
-    public init() {}
+    public init() {
+        CLIInterruptHandler.installIfExecutable()
+    }
+}
+
+private final class CLIInterruptHandler: @unchecked Sendable {
+    private static let installed = CLIInterruptHandler()
+
+    private var sources: [DispatchSourceSignal] = []
+    private let stateLock = NSLock()
+    private var isStopping = false
+
+    static func installIfExecutable() {
+        guard ProcessInfo.processInfo.processName == "trackify" else { return }
+        _ = installed
+    }
+
+    private init() {
+        Darwin.signal(SIGINT, SIG_IGN)
+        Darwin.signal(SIGTERM, SIG_IGN)
+        let queue = DispatchQueue(label: "com.zoulabs.trackify.cli-signals")
+        sources = [SIGINT, SIGTERM].map { signal in
+            let source = DispatchSource.makeSignalSource(signal: signal, queue: queue)
+            source.setEventHandler { [weak self] in self?.stop(for: signal) }
+            source.resume()
+            return source
+        }
+    }
+
+    private func stop(for signal: Int32) {
+        let shouldStop = stateLock.withLock {
+            guard !isStopping else { return false }
+            isStopping = true
+            return true
+        }
+        guard shouldStop else { return }
+        ProcessRunner.terminateAllRunningCommands()
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.2) {
+            ProcessRunner.terminateAllRunningCommands(signal: SIGKILL)
+            Darwin._exit(128 + signal)
+        }
+    }
 }
 
 public struct SummariesCommand: AsyncParsableCommand {

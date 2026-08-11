@@ -2,7 +2,16 @@
 
 Last updated: 2026-08-11
 
-This document records reproducible V1 and Goal 2 checks separately from product design. It does not treat unavailable signing credentials as a successful signed-release test.
+This document records reproducible V1 through Goal 5 checks separately from product design. It does not treat a locally built archive as a published release or live update test.
+
+## Completion hardening record — 2026-08-11
+
+- All 149 tests in 10 suites pass with code coverage enabled; strict formatting, fixture privacy, shell syntax, workflow YAML, Git whitespace, release build, and the schema-v2 two-day simulation pass.
+- Summary v5 uses semantic message origin/kind rather than display role, so human/delegated intent remains prominent while provider notifications and agent progress cannot be mislabeled as user requests. A 12-hour pacing regression proves 24 closed half-hour leaves use 24 provider calls, live current/day composition uses none, and the closed day adds exactly one synthesis call.
+- Default safeguards are 48 calls/day, 2 million tokens/day, 30 million tokens/month, and 3% of the observed weekly Codex allowance. Existing default settings migrate forward while explicit user values remain unchanged.
+- Ctrl-C/SIGTERM now terminates Trackify-owned provider children, and an actual CLI/provider signal drill exited 130 without an orphan. Interrupted summary runs recover to an explicit cancelled terminal record.
+- The exact Universal 2 direct-release path passed for app, CLI, and every nested Sparkle component: hardened-runtime ad-hoc signing, deep validation, identifiers, architectures, version/origin, Ed25519 archive signing and verification, and generated appcast. The permanent public key is pinned in source and both release secrets are configured in the protected GitHub environment.
+- CI now requests a Swift 6 runner and validates the current simulation schema instead of the obsolete schema-v1 field set.
 
 ## Goal 4 completion protocol
 
@@ -119,12 +128,26 @@ summary or report provider was invoked by live collection.
 
 The final local build used the machine's existing Apple Development identity
 rather than an ad-hoc signature. This gives successive development bundles a
-stable macOS privacy identity; production releases continue to use the separate
-Developer ID signing and notarization pipeline.
+stable macOS privacy identity. Public releases use the separate ad-hoc-signing
+and EdDSA-pinned Sparkle pipeline documented in `UPDATES.md`.
+
+An interrupted real Codex summary invocation was then used to validate restart
+recovery. The provider process exited without releasing its generation lease,
+leaving run `ea138e67-0a3e-4f91-a998-488a1b1a631b` in `running`. Installed build
+`0.3.0-dev` (`503`) reclaimed the lease only after proving its local owner PID
+was gone, changed the run to explicit `failed/cancelled` state at app startup,
+and left no running summary records. A focused regression also proves that a
+lease owned by a still-live process is never reclaimed.
+
+Final installed build `0.3.0-dev` (`505`) applies the same startup contract to
+configurable report runs, creating their deterministic fallback artifact rather
+than leaving stale running state. Its app signature, doctor result, live process,
+and zero-running summary/report checks pass; no `Trackify.app.previous` remains
+in the installation directory.
 
 ## Automated checks
 
-- `swift test`: 145 tests across domain, store, engine, adapters, macOS application state, Goal 2 capability discovery, canonical evidence integrity, bounded rebuild coverage, Claude sidechain and compacted-context classification, Claude Desktop Code audit ingestion, live FSEvents planning and delivery, queue isolation/recovery, cross-process provider-generation coalescing, weekly allowance attribution, live menu budget state, budget-fallback recovery without retry churn, provider credit rates, budget migration, usage and budgets, versioned templates, independently managed scheduled reporters, pre-compilation repository-group scoping, run-specific instructions, repeated manual generation, canonical summary coverage/upgrades, internal-message filtering, privacy profiles, immutable artifacts, idempotent delivery, stable pagination, dense hourly and one-year/120-repository query scale, deterministic simulation, migrations, privacy, updates, and CLI surfaces.
+- `swift test --enable-code-coverage`: 149 tests across domain, store, engine, adapters, macOS application state, Goal 2 capability discovery, canonical evidence integrity, bounded rebuild coverage, Claude sidechain and compacted-context classification, Claude Desktop Code audit ingestion, live FSEvents planning and delivery, queue isolation/recovery, provider-process cancellation, dead-owner lease reclamation, interrupted-summary startup recovery, cross-process provider-generation coalescing, weekly allowance attribution, live menu budget state, budget-fallback recovery without retry churn, provider credit rates, budget migration, usage and budgets, versioned templates, independently managed scheduled reporters, pre-compilation repository-group scoping, run-specific instructions, repeated manual generation, canonical summary coverage/upgrades, internal-message filtering, privacy profiles, immutable artifacts, idempotent delivery, stable pagination, dense hourly and one-year/120-repository query scale, deterministic simulation, migrations, privacy, updates, and CLI surfaces.
 - `swift format lint --recursive --strict`: clean using the repository configuration.
 - `git diff --check`: clean.
 - `scripts/check-fixture-privacy.sh`: sanitized fixture structure and credential/path checks pass.
@@ -156,7 +179,7 @@ Developer ID signing and notarization pipeline.
   inputs, quiet-hour metadata, and the 20 KiB cap.
 - Degraded health: persisted collector failures remain visible through lightweight status refreshes until a healthy collection clears them.
 - Local install, repair, and recoverable-uninstall scripts pass Zsh syntax validation and refuse unrelated CLI-link replacement by construction.
-- Release automation and normal CI/Pages workflows parse as YAML; the release job is protected, credential-gated, and cannot publish before signing, notarization, stapling, Team-ID/Gatekeeper, architecture, version, Sparkle, manifest, checksum, and SBOM steps succeed.
+- Release automation and normal CI/Pages workflows parse as YAML; the release job is protected, credential-gated, and cannot publish before deep ad-hoc signing, architecture, identity, version, Sparkle, manifest, checksum, and SBOM steps succeed.
 
 ## Native UI smoke test
 
@@ -266,10 +289,10 @@ external-symlink, native, and Rosetta CLI invocation all resolve version `0.2.0`
 build `201`, direct origin, and Sparkle as the sole update authority. The test
 uses a non-release placeholder key and does not claim cryptographic validity.
 
-This local package is deliberately not described as the public release
-candidate: it is ad-hoc signed. The Developer ID,
-notarization, stapling, Gatekeeper, Sparkle enclosure, and elapsed-soak gates
-remain in the acceptance audit.
+This local package is deliberately not described as a published release
+candidate: it has no production Sparkle key or signed enclosure. Those gates,
+the non-notarized first-open drill, live update, and elapsed soak remain in the
+acceptance audit.
 
 ## Universal bundle
 
@@ -283,7 +306,7 @@ remain in the acceptance audit.
 - native arm64 CLI execution and x86_64 execution through Rosetta;
 - a valid bundle-level ad-hoc development signature after final packaging.
 
-The local bundle is ad-hoc signed only. Developer ID signing, hardened-runtime signature verification, notarization, stapling, Gatekeeper assessment, Sparkle enclosure signing, and a live update remain release-owner gates.
+The local bundle is ad-hoc signed. Hardened-runtime signature verification passes; production Sparkle enclosure signing, recoverable key custody, non-notarized first-open validation, and a live update remain release-owner gates.
 
 A second native bundle validation injected `direct` installation origin, build `77`, version `0.1.0-origin-test`, and a non-production Sparkle public-key placeholder. Both direct execution and an external symlink invocation resolved the enclosing bundle metadata and selected Sparkle as the sole update authority. This validates packaging and origin routing, not cryptographic signing or a live feed.
 
@@ -406,5 +429,5 @@ Codex CLI did not expose billing data.
 
 - Seven-day sleep/wake and failure-recovery soak with the app continuously running.
 - Clean install, upgrade, rollback/repair, and uninstall on every confirmed workplace architecture.
-- Developer ID, notarization, Sparkle, appcast, SBOM, and live update verification with protected release credentials.
+- First release publication, appcast/SBOM inspection, non-notarized first-open, and live update verification using the already provisioned protected Sparkle key.
 - Workplace macOS baseline confirmation; broader public promotion would also reopen the documented name-clearance checklist.

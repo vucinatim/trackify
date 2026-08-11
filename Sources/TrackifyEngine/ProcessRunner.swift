@@ -87,6 +87,12 @@ public struct ProcessRunner: CommandRunning, InputCommandRunning {
         self.terminationGrace = terminationGrace
     }
 
+    /// Terminates subprocesses owned by this Trackify process. The CLI uses
+    /// this during signal shutdown so provider work cannot outlive Ctrl-C.
+    public static func terminateAllRunningCommands(signal: Int32 = SIGTERM) {
+        RunningProcessRegistry.shared.terminateAll(signal: signal)
+    }
+
     public func run(
         executable: URL,
         arguments: [String],
@@ -173,6 +179,8 @@ public struct ProcessRunner: CommandRunning, InputCommandRunning {
 
         try process.run()
         let processID = process.processIdentifier
+        RunningProcessRegistry.shared.register(processID)
+        defer { RunningProcessRegistry.shared.unregister(processID) }
         cancellation?.attach(processID: processID)
         defer { cancellation?.detach(processID: processID) }
         try outputPipe.fileHandleForWriting.close()
@@ -216,6 +224,28 @@ public struct ProcessRunner: CommandRunning, InputCommandRunning {
         if timedOut { throw ProcessRunnerError.timedOut(seconds: timeout) }
         if let error = state.error { throw error }
         return ProcessOutput(status: process.terminationStatus, data: state.data)
+    }
+}
+
+private final class RunningProcessRegistry: @unchecked Sendable {
+    static let shared = RunningProcessRegistry()
+
+    private let lock = NSLock()
+    private var processIDs = Set<pid_t>()
+
+    func register(_ processID: pid_t) {
+        _ = lock.withLock { processIDs.insert(processID) }
+    }
+
+    func unregister(_ processID: pid_t) {
+        _ = lock.withLock { processIDs.remove(processID) }
+    }
+
+    func terminateAll(signal: Int32) {
+        let running = lock.withLock { Array(processIDs) }
+        for processID in running {
+            _ = Darwin.kill(processID, signal)
+        }
     }
 }
 

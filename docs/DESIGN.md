@@ -722,13 +722,13 @@ Activity snapshots are pure range queries over immutable evidence, so they do no
 
 ## 14. Local data and access
 
-The ledger is local and user-owned. The initial distribution is expected to be a signed, notarized application outside the Mac App Store because broad repository and local cache access conflicts with a tightly sandboxed experience.
+The ledger is local and user-owned. Initial distribution is an ad-hoc-signed, non-notarized application outside the Mac App Store because broad repository and local cache access conflicts with a tightly sandboxed experience and the project does not require a paid Apple Developer membership.
 
-The app and CLI are distributed together through signed and notarized GitHub Release artifacts, a signed installation manifest, a Sparkle appcast, and a stable agent-readable installation protocol. Direct installations use Sparkle 2 for verified in-app replacement and relaunch. Homebrew and managed installations retain one external update authority. Codex or Claude can perform every safe mechanical installation step; provider login and macOS privacy approval remain explicit user actions.
+The app and CLI are distributed together through immutable GitHub Release artifacts, an EdDSA-signed installation manifest, a Sparkle appcast, and a stable agent-readable installation protocol. Initial installation is trust-on-first-use from the public project; direct installations pin the Sparkle key for verified in-app replacement and relaunch. Homebrew and managed installations retain one external update authority. Codex or Claude can perform every safe mechanical installation step; first-open confirmation, provider login, and macOS privacy approval remain explicit user actions.
 
 Before applying configuration, deterministic local inspection returns a bounded manifest of provider health, candidate roots, repository counts, and backfill estimates. The installer agent combines that manifest with reliable conversation knowledge, recommends primary groups and separate evidence/report history windows, and asks one consolidated confirmation question. Raw repository contents and transcripts are not sent to the installer agent for setup classification. The complete distribution contract is defined in [INSTALLATION.md](./INSTALLATION.md).
 
-The database, configuration, private logs, migration backups, and runtime files live beneath `~/Library/Application Support/Trackify/` with user-only permissions. Direct releases use Developer ID signing, hardened runtime, and notarization. Final bundle identifiers, Team ID, and signing keys are supplied through centralized build and protected release configuration rather than domain code.
+The database, configuration, private logs, migration backups, and runtime files live beneath `~/Library/Application Support/Trackify/` with user-only permissions. Direct releases use ad-hoc code signing, hardened runtime, and EdDSA-signed updates. Final bundle identifiers and update keys are supplied through centralized build and protected release configuration rather than domain code.
 
 The app should:
 
@@ -892,11 +892,11 @@ Outcome: Trackify provides a dependable long-term development history.
 - Collection time uses injected clocks; derivation/reporting use explicit cutoffs and deterministic period policy; only the app owns real waiting.
 - Simulation always uses an isolated ledger and deterministic summarizer by default.
 - Live collection and historical backfill share the same idempotent collector pipeline.
-- Direct application updates use Sparkle 2 with signed, notarized GitHub Release artifacts.
+- Direct application updates use Sparkle 2 with EdDSA-signed GitHub Release archives.
 - The app and bundled CLI are one versioned release unit.
 - Installation origin determines one update authority; Trackify does not replace Homebrew- or MDM-owned copies.
 - The provisional platform baseline is macOS 14 or later with Universal 2 release artifacts.
-- Direct distribution uses a non-App-Sandbox Developer ID application with hardened runtime.
+- Direct distribution uses a non-App-Sandbox, ad-hoc-signed application with hardened runtime and an explicit non-notarized first-open flow.
 - The canonical data root is `~/Library/Application Support/Trackify/` with user-only permissions.
 - V1 has no Trackify analytics or automatic crash-report upload.
 - Provider evidence packets are bounded and deterministically redacted before invocation.

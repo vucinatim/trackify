@@ -3,6 +3,8 @@
 Status: Implemented and locally validated
 Last updated: 2026-08-11
 
+Completion hardening also covers process lifecycle: CLI interruption terminates any Trackify-owned provider child, and the next summary refresh marks an interrupted run terminal rather than leaving a permanent `running` record.
+
 Goal 5 makes Trackify feel continuously current without changing what counts as
 work. Supported Git, Codex, and Claude evidence should move the visible current
 hour, counters, project list, and Activity ledger within a few seconds of being

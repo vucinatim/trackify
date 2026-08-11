@@ -31,9 +31,8 @@ for binary in "${app_binary}" "${cli}"; do
 done
 
 /usr/bin/codesign --verify --deep --strict --verbose=2 "${app}"
-team_id=$(/usr/bin/codesign -dvv "${app}" 2>&1 | /usr/bin/awk -F= '/^TeamIdentifier=/{print $2}')
-[[ "${team_id}" == "PNTJNS22UU" ]]
-/usr/sbin/spctl --assess --type execute --verbose=2 "${app}"
-/usr/bin/xcrun stapler validate "${app}"
+[[ "$(/usr/bin/codesign -d --entitlements :- "${app}" 2>/dev/null | /usr/bin/plutil -extract com.apple.security.app-sandbox raw -o - - 2>/dev/null || true)" != "true" ]]
+[[ "$(/usr/bin/codesign -dvv "${app}" 2>&1 | /usr/bin/awk -F= '/^Identifier=/{print $2}')" == "com.zoulabs.trackify" ]]
+[[ "$(/usr/bin/codesign -dvv "${cli}" 2>&1 | /usr/bin/awk -F= '/^Identifier=/{print $2}')" == "com.zoulabs.trackify.cli" ]]
 [[ "$("${cli}" --version)" == "${expected_version}" ]]
 [[ "$("${cli}" update status --json | /usr/bin/plutil -extract origin raw -o - -)" == "direct" ]]

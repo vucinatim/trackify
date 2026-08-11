@@ -1,7 +1,7 @@
 # Trackify V1 Readiness Checklist
 
-Status: Release-candidate source implemented; distribution gates remain
-Last updated: 2026-08-06
+Status: Product source implemented; first-release validation remains
+Last updated: 2026-08-11
 
 ## 1. Purpose
 
@@ -13,14 +13,14 @@ The checklist is intentionally limited to decisions that prevent security proble
 
 Trackify's V1 source implementation is at release-candidate stage.
 
-The headless ledger, native app, CLI, adapters, reporting, bootstrap, simulation, and bundle tooling are implemented and validated by the repository test suite. Remaining gates are distribution credentials, fleet confirmation, soak/resource measurements, and signed-release verification.
+The headless ledger, native app, CLI, adapters, reporting, bootstrap, simulation, and bundle tooling are implemented and validated by the repository test suite. Remaining gates are first-release publication, fleet confirmation, elapsed soak measurements, and live-update verification.
 
 The criterion-by-criterion evidence and exact remaining proof are maintained in [V1_ACCEPTANCE_AUDIT.md](./V1_ACCEPTANCE_AUDIT.md).
 
 The remaining external gates are:
 
 1. Confirm the workplace macOS/architecture fleet and run the release-build soak measurement.
-2. Install the Developer ID certificate, generate the Sparkle key, and validate signing, notarization, appcast, and update installation.
+2. Publish the first release with the already pinned and protected Sparkle key, then validate first installation, appcast publication, and a signed update.
 3. Revisit the provisional-name clearance scope only before promotion beyond the intended workplace-focused V1.
 
 ## 3. Decisions completed now
@@ -37,7 +37,7 @@ The remaining external gates are:
 - [x] Normalize and deduplicate hook and cache observations through one source-evidence contract.
 - [x] Use `~/Library/Application Support/Trackify/` as the canonical data root.
 - [x] Target macOS 14 or later provisionally and build Universal 2 release artifacts.
-- [x] Distribute a non-App-Sandbox, hardened-runtime Developer ID application.
+- [x] Distribute a non-App-Sandbox, hardened-runtime, ad-hoc-signed application with EdDSA-pinned updates.
 - [x] Use user-only filesystem permissions for the ledger, configuration, hook inbox, backups, and logs.
 - [x] Make V1 local-first with no Trackify analytics or automatic crash-report upload.
 - [x] Send only bounded, deterministically redacted evidence packets through the explicitly selected report provider.
@@ -84,8 +84,7 @@ The current icon and `T` motif remain the V1 direction while the provisional nam
 - [ ] Confirm whether any intended workplace Mac requires Intel support.
 - [x] Use `vucinatim/trackify` as the public GitHub repository.
 - [x] Use the `com.zoulabs.trackify` reverse-DNS namespace, centralized so it can change before signing if required.
-- [x] Select Zou Labs LLC Apple Team `PNTJNS22UU` for the personal public project.
-- [ ] Create and install a Developer ID Application certificate for that team; only development certificates are currently present.
+- [x] Deliberately avoid a paid Developer ID dependency for the workplace-focused release.
 
 Scaffolding may begin before the final five items are complete, but identifiers should remain centralized build settings rather than copied literals.
 
@@ -128,7 +127,7 @@ Provisional platform baseline:
 ```text
 Minimum deployment target   macOS 14.0
 Release architecture        Universal 2: arm64 + x86_64
-Distribution                Developer ID, notarized, outside Mac App Store
+Distribution                Ad-hoc signed, not notarized, outside Mac App Store
 App Sandbox                 Disabled
 Hardened runtime            Enabled
 Data root                   ~/Library/Application Support/Trackify/
@@ -142,10 +141,9 @@ Still required:
 
 - [x] Provisional application bundle identifier: `com.zoulabs.trackify`.
 - [x] Provisional CLI signing identifier: `com.zoulabs.trackify.cli`.
-- [x] Apple Team ID: `PNTJNS22UU` for Zou Labs LLC.
 - [x] GitHub repository URL: `https://github.com/vucinatim/trackify`.
 - [x] Stable V1 installer endpoint: `https://vucinatim.github.io/trackify/install-agent/`; no custom-domain purchase required.
-- [ ] Generate the final Sparkle key during release-pipeline setup; feed URL is `https://vucinatim.github.io/trackify/appcast.xml`.
+- [x] Generate and pin the final Sparkle key; feed URL is `https://vucinatim.github.io/trackify/appcast.xml`. The private key is held by the protected release environment and the owner's macOS Keychain.
 - [x] Fixture baseline: Codex CLI `0.147.0-alpha.1.2` and Claude Code `2.1.29`; support is schema-fingerprint based.
 
 ## 8. App–CLI coordination contract
@@ -201,9 +199,9 @@ Before making the repository the canonical public project:
 - [x] Enable GitHub secret scanning, push protection, and private vulnerability reporting.
 - [x] Protect `main`, require pull requests and the fixture-privacy check, enforce linear history and resolved conversations, and block force pushes and deletion.
 - [x] Add required Swift build/test, simulation, fixture-privacy, and native bundle checks.
-- [x] Release automation references signing, notarization, and Sparkle secrets only through the protected `release` environment; credentials still need to be provisioned by the owner.
+- [x] Release automation references the Sparkle private/public keys only through the protected `release` environment; the permanent key is provisioned there and retained in the owner's macOS Keychain.
 - [x] Support the latest stable release line only until explicitly expanded, and use private GitHub vulnerability reporting without promising an unpublished response SLA.
-- [x] Generate and attach a SwiftPM dependency SBOM in the protected release workflow; first signed output remains pending credentials.
+- [x] Generate and attach a SwiftPM dependency SBOM in the protected release workflow; the first published output remains a release operation.
 
 No contributor agreement or DCO is required for the first personal release. Add one only if contribution volume or ownership requirements make it necessary.
 
@@ -216,7 +214,7 @@ No contributor agreement or DCO is required for the first personal release. Add 
 - [ ] Clean install, upgrade, repair, and uninstall pass on every supported architecture.
 - [x] Database migration and private pre-migration backup tests pass from every currently supported schema.
 - [ ] App, CLI, manifest, appcast, tag, and release notes report the same version.
-- [ ] Developer ID signing, hardened runtime, notarization, stapling, Gatekeeper, and Sparkle verification pass.
+- [ ] Hardened-runtime ad-hoc signing, first-open guidance, Sparkle signature, and live update verification pass.
 - [x] The user consciously accepted `Trackify` for the intended workplace-focused V1; broader promotion still requires the expanded clearance checklist above.
 - [x] The public documentation clearly explains local storage and provider-bound reporting evidence.
 

@@ -141,9 +141,9 @@ public struct GenerationBudgets: Codable, Equatable, Sendable {
     public init(
         maximumInputBytesPerCall: Int = 256 * 1_024,
         maximumEstimatedInputTokensPerCall: Int = 100_000,
-        maximumCallsPerDay: Int = 30,
-        dailyTokenLimit: Int = 1_000_000,
-        monthlyTokenLimit: Int? = 20_000_000,
+        maximumCallsPerDay: Int = 48,
+        dailyTokenLimit: Int = 2_000_000,
+        monthlyTokenLimit: Int? = 30_000_000,
         weeklyCreditLimit: Decimal? = 500,
         weeklyAllowancePercentLimit: Int? = 3,
         minimumProviderAllowanceRemainingPercent: Int = 5,
@@ -201,16 +201,25 @@ public struct GenerationBudgets: Codable, Equatable, Sendable {
             try values.decodeIfPresent(
                 Int.self, forKey: .maximumEstimatedInputTokensPerCall)
             ?? modern.maximumEstimatedInputTokensPerCall
-        maximumCallsPerDay =
+        let decodedCallsPerDay =
             try values.decodeIfPresent(
                 Int.self, forKey: .maximumCallsPerDay) ?? modern.maximumCallsPerDay
-        dailyTokenLimit =
+        maximumCallsPerDay =
+            version == 2 && decodedCallsPerDay == 30
+            ? modern.maximumCallsPerDay : decodedCallsPerDay
+        let decodedDailyTokenLimit =
             try values.decodeIfPresent(
                 Int.self, forKey: .dailyTokenLimit) ?? modern.dailyTokenLimit
-        monthlyTokenLimit =
+        dailyTokenLimit =
+            version == 2 && decodedDailyTokenLimit == 1_000_000
+            ? modern.dailyTokenLimit : decodedDailyTokenLimit
+        let decodedMonthlyTokenLimit =
             values.contains(.monthlyTokenLimit)
             ? try values.decodeIfPresent(Int.self, forKey: .monthlyTokenLimit)
             : modern.monthlyTokenLimit
+        monthlyTokenLimit =
+            version == 2 && decodedMonthlyTokenLimit == 20_000_000
+            ? modern.monthlyTokenLimit : decodedMonthlyTokenLimit
         weeklyCreditLimit =
             values.contains(.weeklyCreditLimit)
             ? try values.decodeIfPresent(Decimal.self, forKey: .weeklyCreditLimit)
@@ -239,7 +248,7 @@ public struct GenerationBudgets: Codable, Equatable, Sendable {
 
     public func encode(to encoder: any Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
-        try values.encode(2, forKey: .version)
+        try values.encode(3, forKey: .version)
         try values.encode(maximumInputBytesPerCall, forKey: .maximumInputBytesPerCall)
         try values.encode(maximumEstimatedInputTokensPerCall, forKey: .maximumEstimatedInputTokensPerCall)
         try values.encode(maximumCallsPerDay, forKey: .maximumCallsPerDay)

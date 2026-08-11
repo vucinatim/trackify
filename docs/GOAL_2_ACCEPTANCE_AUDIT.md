@@ -6,8 +6,8 @@ Last updated: 2026-08-06
 This is the evidence-backed closure record for the 18 acceptance criteria in
 [GOAL_2.md](./GOAL_2.md). “Proven locally” means the behavior is implemented and
 covered by deterministic tests, an isolated CLI exercise, native screenshot
-validation, or a local packaged build. It does not relabel missing Developer ID,
-notarization, or real elapsed soak evidence as successful.
+validation, or a local packaged build. It does not relabel a missing live release,
+signed update drill, or real elapsed soak evidence as successful.
 
 | # | Requirement | Result | Evidence |
 |---:|---|---|---|
@@ -28,7 +28,7 @@ notarization, or real elapsed soak evidence as successful.
 | 15 | App/CLI parity | Proven locally | The native Reports workspace and `reports`/`recipes` CLI expose template management, one-off instructions, preview, manual generation, history, copy, usage, and provenance. Settings expose source/provider selection and budgets. |
 | 16 | Credential boundary | Proven locally | Discovery uses documented executable/version/status commands only. The Claude Desktop adapter imports audit transcript records but never reads `.audit-key`, retains HMACs, or decodes account/configuration fields. |
 | 17 | Fixed-clock and install matrix | Partially proven | Fixed-clock foundation/showcase, source-state fixtures, light/dark Preferences, packaged CLI, and local install pass. The installed Universal candidate and fresh ledgers execute natively on arm64 and through Rosetta on x86_64. A live Codex synthetic run succeeded with emitted usage; the newest Claude Desktop Code CLI correctly reported its expired OAuth context as an authentication failure. A successful Claude reconciliation and the full workplace-machine matrix remain release validation. |
-| 18 | Signed RC and soak | External release gate | Source CI, privacy, Universal package, deep ad-hoc/local signing, direct-origin routing, and simulated failure/wake recovery pass. Developer ID signing, notarization/stapling, Sparkle enclosure signing, and a seven-day real release-build soak require protected release credentials and elapsed operation. |
+| 18 | Release candidate and soak | External release gate | Source CI, privacy, Universal package, deep ad-hoc signing, direct-origin routing, and simulated failure/wake recovery pass. Sparkle enclosure signing, first-install confirmation, a live update, and a seven-day real release-build soak require release operations and elapsed operation. |
 
 ## Additional measured checks
 
@@ -57,16 +57,15 @@ notarization, or real elapsed soak evidence as successful.
 
 These are distribution gates, not missing Goal 2 product features:
 
-1. Add the protected Developer ID Application certificate, notarization
-   credentials, and Sparkle EdDSA key to the GitHub release environment.
-2. Re-authenticate Claude Code, rerun its tiny synthetic provider test, and
+1. Re-authenticate Claude Code, rerun its tiny synthetic provider test, and
    compare Trackify's captured usage with the CLI's emitted usage. The Codex
    reconciliation already passes.
-3. Publish a release candidate through the protected release workflow; verify
-   Team ID, hardened runtime, notarization, stapling, Gatekeeper, appcast,
-   enclosure signature, checksum, universal slices, SBOM, and app/CLI version.
-4. Run the signed candidate continuously for seven elapsed days across sleep,
+2. Publish a release candidate through the protected release workflow using the
+   already provisioned and recoverably retained Sparkle EdDSA key; verify
+   deep ad-hoc signatures, hardened runtime, appcast, enclosure signature,
+   checksum, universal slices, SBOM, app/CLI version, and first-open guidance.
+3. Run the signed candidate continuously for seven elapsed days across sleep,
    wake, provider timeout/loss, budget exhaustion, and recovery; confirm no
    collection stalls or unexpected provider calls.
-5. Complete clean install, upgrade, rollback/repair, and uninstall on the
+4. Complete clean install, upgrade, rollback/repair, and uninstall on the
    confirmed workplace macOS/architecture matrix.

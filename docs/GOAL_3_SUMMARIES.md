@@ -1,7 +1,9 @@
 # Trackify Goal 3: Canonical Work Summaries
 
 Status: Implemented and locally validated
-Last updated: 2026-08-07
+Last updated: 2026-08-11
+
+Summary semantics are currently versioned as `work-summary-v5`. V5 classifies intent from canonical message provenance, never from the UI role alone; live current/day summaries compose locally from closed half-hour leaves, while one provider-authored daily synthesis is generated only after the day closes. Interrupted runs recover explicitly and every semantic or prompt change invalidates incompatible derived revisions without mutating evidence.
 
 Goal 3 separates Trackify's automatic understanding of work from user-directed
 outputs. It replaces the overloaded legacy `WorkReport` concept with two clear,

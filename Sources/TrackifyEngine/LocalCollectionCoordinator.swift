@@ -239,24 +239,9 @@ public struct LocalCollectionCoordinator: Sendable {
     }
 
     private func acquireCollectionLease(store: LedgerStore, ownerID: String) throws -> Bool {
-        let now = clock.now()
-        if try store.acquireLease(name: "collection", ownerID: ownerID, now: now, duration: 900) {
-            return true
-        }
-        guard let previousOwner = try store.leaseOwner(name: "collection"), Self.isDeadLocalOwner(previousOwner) else {
-            return false
-        }
-        try store.releaseLease(name: "collection", ownerID: previousOwner)
-        return try store.acquireLease(name: "collection", ownerID: ownerID, now: now, duration: 900)
-    }
-
-    private static func isDeadLocalOwner(_ ownerID: String) -> Bool {
-        let components = ownerID.split(separator: ":", omittingEmptySubsequences: false)
-        guard components.count >= 3, components[0] == "cli", let processID = Int32(components[1]) else {
-            return false
-        }
-        errno = 0
-        return kill(processID, 0) == -1 && errno == ESRCH
+        try LocalProcessLease.acquire(
+            store: store, name: "collection", ownerID: ownerID,
+            ownerKinds: ["cli"], now: clock.now(), duration: 900)
     }
 
     static func backfillCursorScope(_ range: DateInterval) -> String {

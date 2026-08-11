@@ -263,7 +263,7 @@ Trackify requests only the folders needed for configured roots and supported loc
 - A denied root degrades only that source.
 - Permission health is visible without exposing private path details in exported diagnostics.
 
-The non-App-Sandbox distribution choice is made for practical access to user-selected repositories and local provider caches. Code signing, hardened runtime, notarization, least-access behavior, and explicit source configuration remain required.
+The non-App-Sandbox distribution choice is made for practical access to user-selected repositories and local provider caches. Deep ad-hoc code signing, hardened runtime, EdDSA-pinned updates, least-access behavior, and explicit source configuration remain required. The initial non-notarized download is an acknowledged trust-on-first-use boundary.
 
 ## 15. Threat boundary
 
@@ -296,7 +296,7 @@ V1 does not claim to protect against:
 - Redaction tests with synthetic secrets in messages, paths, commits, and tool output.
 - Evidence-budget tests proving unrelated periods and repositories are excluded.
 - Diagnostic-bundle allowlist tests.
-- Update signature, Team ID, notarization, and downgrade tests.
+- Update-signature, bundle-identity, nested code-integrity, trust-on-first-use, and downgrade tests.
 - Collection-lease ownership, expiry, and recovery tests.
 - Tests proving no telemetry endpoint or unapproved network request exists.
 

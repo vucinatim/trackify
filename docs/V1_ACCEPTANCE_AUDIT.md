@@ -1,7 +1,7 @@
 # Trackify V1 Acceptance Audit
 
-Status: Release-candidate source proven; external release gates remain
-Last updated: 2026-08-06
+Status: Product source proven; first release and elapsed-runtime gates remain
+Last updated: 2026-08-11
 
 ## 1. Audit rule
 
@@ -15,7 +15,7 @@ The detailed command outputs and reference-machine measurements are recorded in 
 ## 2. Current validation baseline
 
 - Strict Swift formatting passes.
-- All 67 tests in four suites pass.
+- All 149 tests in 10 suites pass with code coverage enabled.
 - Fixture privacy, shell syntax, workflow YAML, and Git whitespace checks pass.
 - The deterministic two-day simulation produces 9 core events across 2 repositories and 4 sessions: 7 durable conversation messages and 2 commits, with one honestly unfinished session.
 - A normal CLI query against the preserved simulation ledger returns 3 active evidence hours, 2 LLM turns, 4 conversation messages, and one commit for its first day.
@@ -49,10 +49,10 @@ The detailed command outputs and reference-machine measurements are recorded in 
 | 19 | Require no timers or report maintenance | Proven locally | Normal operation is evidence-driven and scheduled; the V1 app contains no task/timer/report-editing workflow. |
 | 20 | Generate through either authenticated Codex or Claude CLI | Implemented; external validation pending | Both provider commands, model defaults, isolation flags, bounded I/O, timeout behavior, and structured-response contracts are tested with process doubles. One live authenticated invocation per provider remains a release check. |
 | 21 | Prevent report runs from modifying repositories or re-entering history | Proven locally | Codex is ephemeral/read-only/tool-isolated; Claude is non-persistent/tool-free/MCP-isolated; both run outside repositories, and persisted synthetic internal sessions are excluded in a defense-in-depth test. |
-| 22 | Install, bootstrap, diagnose, and open from one stable agent link | Implemented; external validation pending | Stable GitHub Pages installer protocol, verified install/repair/uninstall scripts, bootstrap CLI, and release workflow exist. The promise cannot pass until a signed notarized GitHub artifact is installed from that public endpoint. |
+| 22 | Install, bootstrap, diagnose, and open from one stable agent link | Implemented; external validation pending | Stable GitHub Pages installer protocol, verified install/repair/uninstall scripts, bootstrap CLI, and release workflow exist. The promise cannot pass until an actual GitHub release is installed from that public endpoint and its one-time non-notarized first-open flow is exercised. |
 | 23 | Recommend bounded primary groups | Proven locally | Bootstrap inspection recognizes `zerodays` as Work and `MyProjects`/Projects/Developer as Personal, reports only aggregate repository/history counts, and emits bounded provider-call/token ceilings. |
 | 24 | Backfill all evidence while limiting initial model reports | Proven locally | Bootstrap supports `all|none` evidence import, caps initial report history at 14 days, skips inactive periods, and falls back deterministically on provider failure. |
-| 25 | Apply a signed direct update in one action | Implemented; external validation pending | Sparkle ownership, UI action, appcast/release automation, manifest, and signature verification gates exist. A live signed enclosure and update remain credential-gated. |
+| 25 | Apply a signed direct update in one action | Implemented; external validation pending | Sparkle ownership, UI action, appcast/release automation, manifest, and signature verification gates exist. The permanent EdDSA key is configured; publishing two releases and applying the live update remain release operations. |
 | 26 | Preserve state and bundled CLI through update | Implemented; external validation pending | State lives outside the app bundle; migrations, backup, origin routing, and bundled CLI version checks pass. Preservation still requires a live signed upgrade test. |
 | 27 | Defer Homebrew, managed, and development updates correctly | Proven locally | Installation-origin regression and built development CLI prove exactly one update owner and disabled Sparkle for non-direct builds. |
 | 28 | Send no Trackify analytics or automatic crash uploads | Proven locally | Dependency/source audit and network design expose only Sparkle update checks and explicitly selected provider processes; no analytics or crash-upload SDK is present. |
@@ -66,9 +66,8 @@ The detailed command outputs and reference-machine measurements are recorded in 
 No additional V1 source feature is currently identified. The remaining proof requires external state or elapsed runtime:
 
 1. Confirm the workplace fleet baseline and whether Intel support is actually needed.
-2. Provision the Zou Labs LLC Developer ID Application certificate, final Sparkle private/public key pair, and Apple notarization credentials in the protected release environment.
-3. Publish one release candidate and verify version/tag/manifest/appcast/SBOM consistency, Developer ID signature, hardened runtime, notarization, stapling, Gatekeeper, enclosure signature, and checksum.
-4. Run clean install, launch-at-login/reboot, live Codex report, live Claude report, update/relaunch, repair, and uninstall on each supported architecture.
-5. Complete the seven-day 60-plus-repository soak including sleep/wake, restart, moved/new repositories, large working trees, backfill, absent hooks, provider failure, and recovery without missed or duplicated work.
+2. Publish one release candidate with the provisioned Sparkle key and verify version/tag/manifest/appcast/SBOM consistency, ad-hoc code-signature integrity, hardened runtime, enclosure signature, checksum, and honest non-notarized first-open guidance.
+3. Run clean install, launch-at-login/reboot, live Codex report, live Claude report, update/relaunch, repair, and uninstall on each supported architecture.
+4. Complete the seven-day 60-plus-repository soak including sleep/wake, restart, moved/new repositories, large working trees, backfill, absent hooks, provider failure, and recovery without missed or duplicated work.
 
 Trackify should remain described as **release-candidate source** until these gates are recorded as passing. A successful local build is not a substitute for them.

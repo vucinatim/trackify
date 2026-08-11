@@ -1,7 +1,7 @@
 # Trackify Installation and Distribution
 
-Status: V1 protocol implemented; signed release publication pending
-Last updated: 2026-08-05
+Status: V1 protocol implemented; first non-notarized release publication pending
+Last updated: 2026-08-11
 
 ## 1. Purpose
 
@@ -11,7 +11,7 @@ The target experience is:
 
 > Install and set up Trackify using https://vucinatim.github.io/trackify/install-agent/
 
-The agent downloads a signed release, verifies it, installs the macOS application and CLI, detects the user's existing coding-agent environment, starts repository discovery and backfill, runs diagnostics, and opens Trackify.
+The agent downloads a release from the public GitHub project, verifies its published metadata and internal integrity, installs the macOS application and CLI, detects the user's existing coding-agent environment, starts repository discovery and backfill, runs diagnostics, and opens Trackify.
 
 Installation can be almost entirely automatic. Provider authentication and macOS-protected folder access may still require explicit user approval; Trackify must guide those approvals rather than attempting to bypass them.
 
@@ -23,7 +23,7 @@ Application update delivery is defined in [UPDATES.md](./UPDATES.md).
 - Install the native application and CLI from one stable agent-readable entry point.
 - Support Codex-driven and Claude-driven installation equally.
 - Avoid requiring the user to understand package managers or shell configuration.
-- Preserve macOS code-signing, notarization, Gatekeeper, and privacy controls.
+- Preserve macOS code-signing and privacy controls without instructing users to disable Gatekeeper.
 - Detect installed Codex and Claude CLIs, proving authentication only when the observed CLI exposes a safe non-interactive status command.
 - Configure a working summary provider without copying credentials.
 - Discover likely repository roots and prepare concise group recommendations.
@@ -46,16 +46,14 @@ Application update delivery is defined in [UPDATES.md](./UPDATES.md).
 
 ## 4. Release artifacts
 
-Each release contains:
+Each published direct release contains:
 
-- A signed and notarized universal macOS application.
-- A signed universal `trackify` CLI executable built from the same source revision.
-- A user-scoped installation archive or installer.
-- An optional signed system package for managed deployment.
-- A Homebrew cask for developer-friendly installation.
-- A signed update manifest.
+- A Universal 2 ZIP containing the ad-hoc-signed macOS application and bundled
+  `trackify` CLI from the same source revision.
+- A DMG containing the same verified application for human installation.
+- An EdDSA-signed update manifest and Sparkle enclosure.
 - SHA-256 checksums for every downloadable artifact.
-- Release notes and schema compatibility information.
+- Release notes, schema compatibility information, and a SwiftPM dependency SBOM.
 
 The app and CLI report the same semantic version and build identifier.
 
@@ -65,7 +63,7 @@ The provisional V1 baseline is macOS 14 or later with a Universal 2 application 
 
 ### 5.1 Agent-driven direct installation
 
-This is the canonical experience. The agent reads a versioned protocol, downloads a signed artifact, verifies it, installs it into user-writable locations, bootstraps Trackify, and opens the app.
+This is the canonical experience. The agent reads a versioned protocol, downloads a release artifact, verifies its checksum, manifest signature, identifiers, and deep ad-hoc code signature, installs it into user-writable locations, bootstraps Trackify, and opens the app.
 
 Default locations:
 
@@ -79,7 +77,9 @@ The agent may use `/Applications` when the user requests a system-wide install a
 
 ### 5.2 Homebrew
 
-When Homebrew is installed and healthy, the agent may use the official Trackify cask. The cask installs the app and links the CLI into the active Homebrew prefix.
+Trackify V1 does not publish a Homebrew cask. The installation-origin model is
+already able to defer updates to Homebrew if a cask is added later, but the
+one-link installer must not advertise or select an unavailable package.
 
 Representative future command:
 
@@ -87,7 +87,7 @@ Representative future command:
 brew install --cask trackify
 ```
 
-The agent-readable protocol determines whether Homebrew or the direct signed artifact is the cleaner path on the current machine.
+The V1 agent-readable protocol uses the direct GitHub Release artifact.
 
 ### 5.3 Managed package
 
@@ -100,7 +100,7 @@ A signed package may later support company-managed distribution through MDM. Man
 - The current stable release manifest URL.
 - Supported macOS versions and architectures.
 - Exact download and verification steps.
-- Expected Team ID and bundle identifiers.
+- Expected bundle identifiers and pinned Sparkle public key.
 - Installation paths.
 - Bootstrap commands.
 - Known user-approval boundaries.
@@ -134,14 +134,16 @@ The installation endpoint references a machine-readable manifest:
     }
   },
   "signing": {
-    "teamId": "PNTJNS22UU",
     "applicationBundleId": "com.zoulabs.trackify",
-    "cliIdentifier": "com.zoulabs.trackify.cli"
+    "cliIdentifier": "com.zoulabs.trackify.cli",
+    "appleCodeSigning": "ad-hoc",
+    "notarized": false,
+    "updateArchive": "ed25519"
   }
 }
 ```
 
-The update manifest itself is signed. An HTTPS URL and checksum alone are not treated as the complete application-update trust model.
+The update manifest itself is EdDSA signed. For initial installation, the public GitHub project is explicitly the trust-on-first-use authority. After installation, the public key embedded in Trackify is the update trust anchor; HTTPS or control of GitHub alone is not enough to produce an accepted update.
 
 ## 8. Agent installation protocol
 
@@ -152,7 +154,6 @@ The installer agent follows these steps.
 - Confirm the operating system is macOS.
 - Detect architecture and macOS version.
 - Check whether Trackify is already installed.
-- Check whether Homebrew is available.
 - Check available disk space.
 - Detect `codex` and `claude` executables without reading their credential files.
 - Detect documented lifecycle-hook capability, existing Trackify integration state, trust requirements, and managed-policy restrictions without changing provider configuration.
@@ -168,8 +169,9 @@ The installer agent follows these steps.
 
 - Download into a newly created temporary directory.
 - Verify artifact size and SHA-256 checksum.
-- Verify Apple code signature and expected Team ID.
-- Verify notarization and Gatekeeper assessment.
+- Verify the manifest's EdDSA signature against the public key pinned by this protocol.
+- Verify the extracted application's bundle identifiers and deep ad-hoc code signature.
+- Explain that the app is not notarized and macOS may require one explicit first-open confirmation.
 - Stop without installing if any verification fails.
 
 ### Step 4: Install
@@ -475,11 +477,11 @@ Trackify needs access to your development folders:
 [Allow folders]
 ```
 
-Trackify uses normal macOS permission and folder-selection mechanisms. The installer never instructs an agent to bypass TCC, grant Full Disk Access through unsupported means, remove quarantine attributes to evade Gatekeeper, or alter system security settings.
+Trackify uses normal macOS permission and folder-selection mechanisms. The installer never instructs an agent to bypass TCC, grant Full Disk Access through unsupported means, disable Gatekeeper globally, or alter system security settings.
 
 ### 13.4 First launch and login item
 
-macOS may present first-launch, downloaded-application, background-item, or login-item notifications. Signing and notarization minimize friction but do not eliminate policy-controlled approval.
+Because Trackify is not notarized, macOS may refuse the first normal double-click. The installer guides the user to right-click Trackify and choose **Open**, or to use **System Settings → Privacy & Security → Open Anyway**. This is a one-time approval for the downloaded application; the installer does not remove quarantine or disable Gatekeeper. Background-item, protected-folder, or login-item approvals may still appear separately.
 
 ### 13.5 Administrator authorization
 
@@ -537,7 +539,7 @@ Requirements:
 
 Trackify needs dependable updates because Codex and Claude local formats and CLI behavior may evolve.
 
-Direct installations use Sparkle 2. Signed, notarized application archives are hosted as immutable GitHub Release assets, and a stable appcast is published through GitHub Pages. The separate signed JSON release manifest remains the protocol for one-link agent installation and repair; both metadata formats describe the same release artifacts.
+Direct installations use Sparkle 2. Ad-hoc-signed application archives are hosted as immutable GitHub Release assets, their update enclosures and JSON manifests are EdDSA signed, and a stable appcast is published through GitHub Pages. The separate signed JSON release manifest remains the protocol for one-link agent installation and repair; both metadata formats describe the same release artifacts.
 
 Trackify records whether an installation is direct, Homebrew-owned, managed, or a development build. Only direct installations are replaced by Sparkle. The other origins defer to their owning update mechanism.
 
@@ -592,12 +594,12 @@ Default uninstall:
 
 `--delete-data` is explicit and moves the exact Application Support directory to Trash rather than permanently deleting it. An unrelated CLI-path file is never replaced or removed. Launch-at-login registration is harmless once the bundle is absent and is removed through the app when available; signed installer validation still covers that lifecycle.
 
-For a locally built bundle, `scripts/install-local.sh <Trackify.app> [--launch]` stages the app, preserves an existing bundle as a timestamped backup, installs to `~/Applications`, creates the stable CLI link, and runs diagnostics. Published direct bundles must pass Developer ID Team `PNTJNS22UU` and Gatekeeper verification; unsigned development bundles require the explicit `TRACKIFY_ALLOW_UNSIGNED=1` override. The installer never edits shell startup files or uses `sudo`.
+For a locally built bundle, `scripts/install-local.sh <Trackify.app> [--launch]` stages the app, preserves at most one previous bundle as `Trackify.app.previous`, installs to `~/Applications`, creates the stable CLI link, and runs diagnostics. Published direct bundles must have a deeply valid code signature, the expected identifiers, and a configured Sparkle public key; development bundles require the explicit `TRACKIFY_ALLOW_UNSIGNED=1` override. The installer never edits shell startup files or uses `sudo`.
 
 ## 20. Security requirements
 
-- All official release artifacts are signed and notarized.
-- Agents verify checksum, signature identity, and Gatekeeper assessment.
+- All official release archives and manifests are EdDSA signed; app code is ad-hoc signed for internal integrity.
+- Agents verify checksum, manifest signature, bundle identifiers, and deep code-signature validity.
 - Downloads use HTTPS and a signed manifest.
 - Installation uses a fresh temporary directory.
 - Archive extraction rejects path traversal and unexpected absolute paths.
@@ -659,7 +661,7 @@ For a locally built bundle, `scripts/install-local.sh <Trackify.app> [--launch]`
 
 - Checksum mismatch.
 - Signature mismatch.
-- Notarization or Gatekeeper failure.
+- Invalid manifest, archive, or nested code signature.
 - Network interruption during download.
 - App replacement interrupted.
 - Bootstrap interrupted during backfill.

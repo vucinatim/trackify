@@ -15,8 +15,8 @@ public struct SummaryRefreshResult: Codable, Equatable, Sendable {
 }
 
 public struct SummaryCoordinator: Sendable {
-    public static let generatorVersion = "work-summary-v4"
-    public static let promptVersion = "work-summary-prompt-v4"
+    public static let generatorVersion = "work-summary-v5"
+    public static let promptVersion = "work-summary-prompt-v5"
     public static let schemaVersion = "work-summary-v1"
 
     private let compiler: SummaryCoverageCompiler
@@ -54,6 +54,21 @@ public struct SummaryCoordinator: Sendable {
         self.availableProvider = availableProvider
     }
 
+    public static func recoverInterruptedRuns(
+        store: LedgerStore,
+        now: Date
+    ) throws -> [SummaryRun] {
+        let ownerID = "summaries:\(ProcessInfo.processInfo.processIdentifier):\(UUID().uuidString)"
+        guard
+            try ProviderGenerationLease.acquire(
+                store: store, ownerID: ownerID, now: now, duration: 60)
+        else {
+            return []
+        }
+        defer { try? store.releaseLease(name: ProviderGenerationLease.name, ownerID: ownerID) }
+        return try store.recoverInterruptedSummaryRuns(at: now)
+    }
+
     public func refresh(
         store: LedgerStore,
         settings: TrackifySettings,
@@ -78,8 +93,8 @@ public struct SummaryCoordinator: Sendable {
                 * TimeInterval(min(settings.generationBudgets.maximumCallsPerDay, 20)))
         do {
             guard
-                try store.acquireLease(
-                    name: ProviderGenerationLease.name, ownerID: ownerID,
+                try ProviderGenerationLease.acquire(
+                    store: store, ownerID: ownerID,
                     now: now, duration: leaseDuration)
             else {
                 return SummaryRefreshResult(generated: [], unchanged: 0, issues: [])
@@ -90,6 +105,14 @@ public struct SummaryCoordinator: Sendable {
                 issues: ["Could not acquire summary generation lease: \(error.localizedDescription)"])
         }
         defer { try? store.releaseLease(name: ProviderGenerationLease.name, ownerID: ownerID) }
+
+        do {
+            _ = try store.recoverInterruptedSummaryRuns(at: now)
+        } catch {
+            return SummaryRefreshResult(
+                generated: [], unchanged: 0,
+                issues: ["Could not recover interrupted summary runs: \(error.localizedDescription)"])
+        }
 
         let days = (0..<lookbackDays).compactMap { offset -> DateInterval? in
             guard let start = calendar.date(byAdding: .day, value: -offset, to: today.start)
@@ -171,8 +194,8 @@ public struct SummaryCoordinator: Sendable {
                             store: store, settings: settings, kind: .current,
                             range: DateInterval(start: currentStart, end: cutoff),
                             children: currentLeaves,
-                            preferredMode: preferredMode, readyProvider: readyProvider,
-                            recoveryBudgetStatus: recoveryBudgetStatus,
+                            preferredMode: .localOnly, readyProvider: nil,
+                            recoveryBudgetStatus: nil,
                             now: now, calendar: calendar)
                         if let parent { generated.append(parent.id) } else { unchanged += 1 }
                     } catch {
@@ -183,11 +206,13 @@ public struct SummaryCoordinator: Sendable {
 
             do {
                 let parentRange = DateInterval(start: day.start, end: cutoff)
+                let isOpenDay = calendar.isDate(day.start, inSameDayAs: now)
                 let parent = try await generateParentIfChanged(
                     store: store, settings: settings, kind: .day,
                     range: parentRange, children: leaves,
-                    preferredMode: preferredMode, readyProvider: readyProvider,
-                    recoveryBudgetStatus: recoveryBudgetStatus,
+                    preferredMode: isOpenDay ? .localOnly : preferredMode,
+                    readyProvider: isOpenDay ? nil : readyProvider,
+                    recoveryBudgetStatus: isOpenDay ? nil : recoveryBudgetStatus,
                     now: now, calendar: calendar)
                 if let parent { generated.append(parent.id) } else { unchanged += 1 }
             } catch {
@@ -515,7 +540,7 @@ public struct SummaryCoordinator: Sendable {
         let projects = unique(events.compactMap(\.repositoryName))
         let intents = unique(
             events.compactMap {
-                $0.messageRole == .user ? $0.messageExcerpt.map { concise($0, limit: 320) } : nil
+                isIntent($0) ? $0.messageExcerpt.map { concise($0, limit: 320) } : nil
             })
         let outcomes = unique(
             events.compactMap { event in
@@ -550,7 +575,7 @@ public struct SummaryCoordinator: Sendable {
             let projectEvents = events.filter { $0.repositoryName == project }
             let projectIntents = unique(
                 projectEvents.compactMap {
-                    $0.messageRole == .user ? $0.messageExcerpt.map { concise($0, limit: 320) } : nil
+                    isIntent($0) ? $0.messageExcerpt.map { concise($0, limit: 320) } : nil
                 })
             let projectOutcomes = unique(
                 projectEvents.compactMap { event in
@@ -686,6 +711,12 @@ public struct SummaryCoordinator: Sendable {
             }).max(by: { $0.revision < $1.revision })
         else { return nil }
 
+        guard
+            existing.generatorVersion == Self.generatorVersion,
+            existing.promptVersion == Self.promptVersion,
+            existing.schemaVersion == Self.schemaVersion
+        else { return nil }
+
         guard preferredMode != .localOnly, let readyProvider else { return existing }
         if existing.provider == readyProvider { return existing }
         if preferredMode == .automatic, existing.provider != nil { return existing }
@@ -731,9 +762,17 @@ public struct SummaryCoordinator: Sendable {
             maximumInputBytes: compilation.chunks.map(\.serializedByteCount).max() ?? 0,
             maximumEstimatedInputTokens: maximumPacketTokens,
             totalEstimatedInputTokens: compilation.estimatedInputTokens
-                + compilation.chunks.count * overhead,
-            reservedCalls: kind == .segment ? 3 : 0,
-            reservedInputTokens: kind == .segment ? 3 * overhead : 0)
+                + compilation.chunks.count * overhead)
+    }
+
+    private func isIntent(_ event: ReportEventDigest) -> Bool {
+        guard event.messageExcerpt != nil else { return false }
+        guard let semantic = event.messageSemanticKind else {
+            return event.messageRole == .user
+        }
+        guard semantic == .intent || semantic == .steering else { return false }
+        guard let origin = event.messageOrigin else { return event.messageRole == .user }
+        return origin == .human || origin == .agent
     }
 
     private func halfHourIntervals(

@@ -1,7 +1,7 @@
 # Trackify Updates and Release Delivery
 
-Status: Sparkle app integration and feed location implemented; signed release publication pending
-Last updated: 2026-08-05
+Status: Sparkle integration and non-notarized release pipeline implemented; first published update pending
+Last updated: 2026-08-11
 
 ## 1. Purpose
 
@@ -32,7 +32,7 @@ This document defines the update contract. Initial installation and guided boots
 ## 3. Non-goals
 
 - Building a custom update framework.
-- Treating HTTPS, GitHub, or a checksum alone as the trust boundary.
+- Pretending a non-notarized first download has Apple-verified publisher identity.
 - Replacing Homebrew- or organization-managed installations behind their package manager.
 - Running application updates during development builds or pull-request builds.
 - Automatically downgrading a ledger after a new application has migrated it.
@@ -43,7 +43,7 @@ This document defines the update contract. Initial installation and guided boots
 Trackify records its installation origin during installation:
 
 ```text
-direct       signed app installed from the Trackify release
+direct       release app installed from GitHub
 homebrew     installed and owned by Homebrew
 managed      installed by an organization or MDM
 development  unsigned or locally built development copy
@@ -58,7 +58,9 @@ Only one system owns updates for an installation:
 | Managed | Organization/MDM | Report the installed version; defer replacement to management policy |
 | Development | Developer | Disable update checks by default |
 
-The one-link agent installer uses the direct channel unless it deliberately selects Homebrew. It records the chosen origin so Trackify never presents a misleading in-app install action.
+The V1 one-link agent installer uses the direct channel. Trackify still records
+the installation origin so an externally managed or future Homebrew package
+never receives a misleading in-app replacement action.
 
 ## 5. User experience
 
@@ -136,7 +138,7 @@ release notes
 optional generated SBOM
 ```
 
-The ZIP is the Sparkle enclosure and contains the signed, notarized universal application with its CLI. The DMG supports human installation. The signed JSON manifest supports the one-link installer and repair workflow.
+The ZIP is the Sparkle enclosure and contains an internally valid, ad-hoc-signed universal application with its CLI. The DMG supports human installation. The EdDSA-signed JSON manifest supports the one-link installer and repair workflow.
 
 GitHub Releases are the artifact store. A stable GitHub Pages URL serves the Sparkle appcast:
 
@@ -178,41 +180,32 @@ versioned Git tag
 → clean checkout
 → build and test app + CLI
 → build universal release archive
-→ sign app and nested executables with Developer ID
-→ enable hardened runtime
-→ submit to Apple notarization and wait
-→ staple notarization ticket
-→ verify code signature and Gatekeeper assessment
+→ ad-hoc sign the app and every nested executable with hardened runtime
+→ verify bundle identities, architectures, versions, and deep code-signature validity
 → sign Sparkle enclosure with EdDSA
 → generate checksums, manifest, appcast, notes, and SBOM
 → create GitHub Release and upload immutable assets
 → publish the stable appcast only after every verification passes
 ```
 
-Directly distributed macOS software uses Apple Developer ID signing and notarization as described by [Apple](https://developer.apple.com/developer-id/) and [Apple's notarization documentation](https://developer.apple.com/documentation/security/notarizing-macos-software-before-distribution). Sparkle adds its own enclosure signature and verifies updates according to its [publishing guidance](https://sparkle-project.org/documentation/publishing/).
+Trackify deliberately does not require a paid Apple Developer Program membership. The first download is therefore not notarized and macOS may require the user to confirm opening it. Every installed release pins the Sparkle EdDSA public key, and Sparkle verifies subsequent update archives according to its [publishing guidance](https://sparkle-project.org/documentation/publishing/). The application and every nested executable are still ad-hoc signed so macOS and Sparkle can validate their internal integrity.
 
 Release credentials exist only in the protected GitHub Actions release environment:
 
-- Developer ID certificate and password.
-- Apple notarization credentials.
 - Sparkle EdDSA private key.
 
 The repository implements this as the manually dispatched, protected `Release` workflow. Its `release` environment must provide:
 
 ```text
-DEVELOPER_ID_APPLICATION_P12_BASE64
-DEVELOPER_ID_APPLICATION_P12_PASSWORD
-DEVELOPER_ID_APPLICATION_IDENTITY
-RELEASE_KEYCHAIN_PASSWORD
-APPLE_NOTARY_ID
-APPLE_NOTARY_PASSWORD
 SPARKLE_EDDSA_PUBLIC_KEY
 SPARKLE_EDDSA_PRIVATE_KEY
 ```
 
-The workflow validates tag/build input, reruns tests and privacy checks, builds Universal 2 with `direct` origin, signs nested Sparkle code and the app, notarizes and staples, verifies Team ID/Gatekeeper/architectures/version, generates the Sparkle appcast, signed manifest, checksums, DMG, and SwiftPM dependency SBOM, then publishes one immutable GitHub Release. GitHub Pages downloads release metadata only after publication. Missing credentials fail closed before publication.
+The workflow validates tag/build input, reruns tests and privacy checks, builds Universal 2 with `direct` origin, ad-hoc signs nested Sparkle code and the app, verifies identities/architectures/version/deep signature validity, generates the Sparkle appcast, signed manifest, checksums, DMG, and SwiftPM dependency SBOM, then publishes one immutable GitHub Release. GitHub Pages downloads release metadata only after publication. Missing Sparkle credentials fail closed before publication.
 
-Pull-request workflows cannot read release credentials or publish artifacts to the stable feed. The Sparkle public key is compiled into the application. Key rotation requires a deliberately designed transition release.
+Pull-request workflows cannot read release credentials or publish artifacts to the stable feed. The Sparkle public key is compiled into the application. Because Trackify has no Developer ID fallback, losing or rotating the private key without a transition release would break automatic updates; the key must be treated as permanent release infrastructure and backed up outside GitHub Actions.
+
+The public key is pinned in `site/release-public-key.txt`; its SHA-256 fingerprint is `8653df20f10e3ef15a7448b2884444e91d2ceadc76d630b2cc39e248039a65e7`. The private key is stored in the release environment and in the owner's macOS Keychain under account `com.zoulabs.trackify`. The workflow derives the public key from the private seed and requires both to match the committed key before building or publishing.
 
 ## 8. Safe update lifecycle
 
@@ -301,23 +294,24 @@ V1 has one stable channel. Prerelease channels, phased rollout, critical-update 
 
 ## 12. Security model
 
-Trust requires all of the following:
+After first installation, update trust requires all of the following:
 
 - HTTPS transport.
 - Immutable versioned release assets.
 - Sparkle EdDSA enclosure signature.
-- Valid Apple Developer ID signature for the expected Trackify identity.
-- Apple notarization and hardened runtime.
+- The public key already embedded in the installed application.
+- A valid Sparkle EdDSA signature over the update archive.
+- A deeply valid ad-hoc signature over the app and nested executables.
 - Version and downgrade policy checks.
 
-GitHub hosting is not itself the trust boundary. A compromised hosting account must not be sufficient to install an artifact that lacks the expected application and Sparkle signatures.
+Initial installation is explicitly trust-on-first-use from the public GitHub project over HTTPS. A compromised hosting account is therefore in scope for the first download. After installation, control of hosting alone is insufficient to publish an accepted update without the separate Sparkle private key.
 
 Trackify never:
 
 - Executes release-note content.
 - Loads code from an update before verification.
 - Exposes signing credentials to builds from pull requests.
-- Replaces an app with a different Team ID or bundle identifier.
+- Replaces an app with a different bundle identifier.
 - Deletes the ledger to recover from an update error.
 
 ## 13. Testing
@@ -351,7 +345,7 @@ Trackify never:
 
 - Version and build agree across app, CLI, manifest, appcast, and tag.
 - Universal archive contains the expected signed nested binaries.
-- Notarization ticket is stapled and Gatekeeper verification succeeds.
+- App and nested executables have valid ad-hoc signatures and the expected identifiers.
 - Sparkle signature verifies with the public key embedded in the previous stable app.
 - Pull requests cannot access production signing or publishing credentials.
 - Published URLs are immutable and all advertised checksums match.
@@ -364,12 +358,12 @@ Trackify never:
 4. Invalid or unsigned artifacts are rejected without replacing the current app.
 5. The app and CLI advance to the same version.
 6. Collection state, source cursors, configuration, login item, and ledger survive the update.
-7. An interrupted update leaves either the old or new signed application runnable, never a partial bundle presented as successful.
+7. An interrupted update leaves either the old or new verified application runnable, never a partial bundle presented as successful.
 8. A failed migration preserves the original ledger and exposes a recoverable diagnostic state.
 9. Homebrew, managed, and development copies do not present a false direct-install action.
 10. Codex or Claude Code can inspect and invoke the same update flow through versioned JSON CLI commands.
 11. GitHub Releases host immutable artifacts and the stable appcast is published only after release verification succeeds.
-12. Signing and notarization secrets are unavailable to pull-request builds.
+12. The Sparkle private key is unavailable to pull-request builds and recoverably backed up.
 
 ## 15. Deferred capabilities
 

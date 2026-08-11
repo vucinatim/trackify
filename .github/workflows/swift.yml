@@ -11,10 +11,12 @@ permissions:
 
 jobs:
   test:
-    runs-on: macos-14
+    runs-on: macos-15
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v7
+      - name: Verify Swift toolchain
+        run: swift --version | grep -E 'Swift version 6\.'
       - name: Resolve dependencies
         run: swift package resolve
       - name: Verify source formatting and scripts
@@ -33,10 +35,10 @@ jobs:
             --speed instant \
             --days 2 \
             --json > simulation.json
-          test "$(jq -r '.schemaVersion' simulation.json)" = "1"
+          test "$(jq -r '.schemaVersion' simulation.json)" = "2"
           test "$(jq -r '.result.generatedEvents' simulation.json)" = "9"
           test "$(jq -r '.result.counts.events' simulation.json)" = "9"
-          test "$(jq -r '.result.days[1].activeSessions' simulation.json)" = "1"
+          test "$(jq -r '.result.days[1].llmTurns' simulation.json)" = "2"
       - name: Verify fixture privacy
         run: scripts/check-fixture-privacy.sh
       - name: Build native app bundle

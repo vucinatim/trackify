@@ -4,6 +4,18 @@ import TrackifyStore
 
 enum ProviderGenerationLease {
     static let name = "provider-generation"
+    private static let ownerKinds: Set<String> = ["provider-test", "reports", "summaries"]
+
+    static func acquire(
+        store: LedgerStore,
+        ownerID: String,
+        now: Date,
+        duration: TimeInterval
+    ) throws -> Bool {
+        try LocalProcessLease.acquire(
+            store: store, name: name, ownerID: ownerID,
+            ownerKinds: ownerKinds, now: now, duration: duration)
+    }
 }
 
 /// The single production boundary for launching a model CLI. It registers the

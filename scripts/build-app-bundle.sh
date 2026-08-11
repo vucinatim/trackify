@@ -2,7 +2,7 @@
 set -euo pipefail
 
 project_root="${0:A:h:h}"
-version="${TRACKIFY_VERSION:-0.1.0-dev}"
+version="${TRACKIFY_VERSION:-0.3.0-dev}"
 build_number="${TRACKIFY_BUILD_NUMBER:-1}"
 public_key="${TRACKIFY_SPARKLE_PUBLIC_KEY:-UNCONFIGURED}"
 installation_origin="${TRACKIFY_INSTALLATION_ORIGIN:-development}"
@@ -84,7 +84,7 @@ if [[ "${installation_origin}" == "development" ]]; then
 fi
 
 if [[ -e "${app_path}" ]]; then
-  mv "${app_path}" "${output_root}/Trackify.app.previous.$(date +%s)"
+  /bin/rm -rf "${app_path}"
 fi
 mv "${staging_app}" "${app_path}"
 

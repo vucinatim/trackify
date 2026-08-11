@@ -233,6 +233,28 @@ extension LedgerStore {
         }
     }
 
+    public func recoverInterruptedSummaryRuns(at date: Date) throws -> [SummaryRun] {
+        try database.write { db in
+            let ids = try String.fetchAll(
+                db, sql: "SELECT id FROM summary_runs WHERE state = 'running' ORDER BY queued_at")
+            guard !ids.isEmpty else { return [] }
+            try db.execute(
+                sql: """
+                    UPDATE summary_runs SET state = 'failed', finished_at = ?,
+                        failure_class = 'cancelled',
+                        failure_detail = 'Interrupted before a validated provider result was stored'
+                    WHERE state = 'running'
+                    """,
+                arguments: [date.timeIntervalSince1970])
+            let placeholders = ids.map { _ in "?" }.joined(separator: ", ")
+            return try Row.fetchAll(
+                db,
+                sql: "SELECT * FROM summary_runs WHERE id IN (\(placeholders)) ORDER BY queued_at",
+                arguments: StatementArguments(ids)
+            ).map(Self.decodeSummaryRun)
+        }
+    }
+
     private static func decodeSummary(_ db: Database, row: Row) throws -> WorkSummary {
         let evidence = try String.fetchAll(
             db,

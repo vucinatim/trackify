@@ -495,7 +495,7 @@ struct WorkIntelligenceTests {
         }
     }
 
-    @Test("An interrupted running job is recovered locally without replaying the provider")
+    @Test("Startup recovers an interrupted running job without replaying the provider")
     func interruptedRecovery() async throws {
         try await withSimulation { store, start, end in
             let counter = InvocationCounter()
@@ -508,11 +508,11 @@ struct WorkIntelligenceTests {
                 period: DateInterval(start: start, duration: 86_400), now: end)
             _ = try store.beginReportRun(id: pending.id, now: end)
 
-            let result = await queue.drain(
-                store: store, settings: settings, now: { end.addingTimeInterval(1) }, maximumRuns: 1)
+            let recovered = try queue.recoverInterruptedRuns(
+                store: store, now: end.addingTimeInterval(1))
 
             #expect(counter.value == 0)
-            #expect(result.completed.count == 1)
+            #expect(recovered.count == 1)
             let run = try #require(try store.reportRun(id: pending.id))
             #expect(run.state == .fallback)
             #expect(run.failureClass == .cancelled)

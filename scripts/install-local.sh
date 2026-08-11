@@ -38,12 +38,11 @@ fi
 
 if [[ "${origin}" == "direct" ]]; then
   /usr/bin/codesign --verify --deep --strict --verbose=2 "${source_app}"
-  team_id=$(/usr/bin/codesign -dvv "${source_app}" 2>&1 | /usr/bin/awk -F= '/^TeamIdentifier=/{print $2}')
-  if [[ "${team_id}" != "PNTJNS22UU" ]]; then
-    echo "Unexpected signing Team ID: ${team_id:-missing}" >&2
+  public_key=$(/usr/libexec/PlistBuddy -c 'Print :SUPublicEDKey' "${info}" 2>/dev/null || true)
+  if [[ -z "${public_key}" || "${public_key}" == "UNCONFIGURED" ]]; then
+    echo "The direct release does not contain a configured Sparkle update key." >&2
     exit 1
   fi
-  /usr/sbin/spctl --assess --type execute --verbose=2 "${source_app}"
 elif [[ "${origin}" != "development" || "${TRACKIFY_ALLOW_UNSIGNED:-0}" != "1" ]]; then
   echo "Only verified direct releases are installable. Set TRACKIFY_ALLOW_UNSIGNED=1 only for a local development build." >&2
   exit 1
@@ -73,7 +72,10 @@ if /usr/bin/pgrep -x TrackifyMac >/dev/null 2>&1; then
 fi
 
 if [[ -e "${target_app}" ]]; then
-  backup="${target_root}/Trackify.app.previous.$(/bin/date +%Y%m%d%H%M%S)"
+  backup="${target_root}/Trackify.app.previous"
+  if [[ -e "${backup}" ]]; then
+    /bin/rm -rf "${backup}"
+  fi
   /bin/mv "${target_app}" "${backup}"
   echo "Previous app preserved at ${backup}."
 fi

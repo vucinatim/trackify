@@ -72,7 +72,7 @@ final class AppModel: ObservableObject {
     @Published private(set) var generationBudgetStatus = GenerationBudgetStatus(
         allowance: nil, allowanceAttributedPercent: 0, allowancePercentLimit: 3,
         estimatedCreditsUsed: 0, weeklyCreditLimit: 500,
-        callsToday: 0, callsPerDayLimit: 30, isPaused: false, pauseReason: nil)
+        callsToday: 0, callsPerDayLimit: 48, isPaused: false, pauseReason: nil)
     @Published private(set) var reportRuns: [ReportRun] = []
     @Published private(set) var summaryRuns: [SummaryRun] = []
     @Published private(set) var recipes: [ReportRecipe] = []
@@ -197,9 +197,12 @@ final class AppModel: ObservableObject {
         if !isUIValidation { configureLoginItemIfNeeded() }
         if !isUIValidation {
             do {
+                let now = referenceNow
                 let startup = try await Task.detached(priority: .utility) {
                     let paths = try TrackifyPaths.default()
                     let store = try LedgerStore(databaseURL: paths.ledgerURL)
+                    _ = try SummaryCoordinator.recoverInterruptedRuns(store: store, now: now)
+                    _ = try ReportQueue().recoverInterruptedRuns(store: store, now: now)
                     let reconciliation = try store.heartbeatObservedAt(service: "reconciliation")
                     let collector = try store.collectorStatus().observedAt
                     return (

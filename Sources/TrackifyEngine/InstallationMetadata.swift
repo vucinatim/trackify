@@ -47,7 +47,7 @@ public struct InstallationMetadata: Codable, Equatable, Sendable {
     public static func parse(info: [String: Any]) -> Self {
         let rawOrigin = info["TrackifyInstallationOrigin"] as? String
         let origin = rawOrigin.flatMap(InstallationOrigin.init(rawValue:)) ?? .development
-        let version = info["CFBundleShortVersionString"] as? String ?? "0.1.0-dev"
+        let version = info["CFBundleShortVersionString"] as? String ?? "0.3.0-dev"
         let build = info["CFBundleVersion"] as? String ?? "0"
         let bundleIdentifier = info["CFBundleIdentifier"] as? String
         let publicKey = info["SUPublicEDKey"] as? String
@@ -74,7 +74,7 @@ public struct InstallationMetadata: Codable, Equatable, Sendable {
         else {
             return Self(
                 origin: .development,
-                version: "0.1.0-dev",
+                version: "0.3.0-dev",
                 build: "0",
                 bundleIdentifier: nil,
                 sparkleConfigured: false

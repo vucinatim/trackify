@@ -7,6 +7,29 @@ import TrackifyDomain
 
 @Suite("Ledger store")
 struct LedgerStoreTests {
+    @Test("Interrupted summary runs recover to an explicit terminal state")
+    func interruptedSummaryRunRecovery() throws {
+        try withTemporaryStore { store in
+            let started = Date(timeIntervalSince1970: 1_754_294_400)
+            let run = SummaryRun(
+                id: SummaryRunID("interrupted-summary"), kind: .segment,
+                periodStart: started, periodEnd: started.addingTimeInterval(1_800),
+                selectionMode: .codex, requestedProvider: .codex,
+                effectiveProvider: .codex, sourceFingerprint: "source",
+                queuedAt: started, startedAt: started, state: .running)
+            try store.save(summaryRun: run)
+
+            let finished = started.addingTimeInterval(60)
+            let recovered = try store.recoverInterruptedSummaryRuns(at: finished)
+
+            #expect(recovered.count == 1)
+            #expect(recovered[0].state == .failed)
+            #expect(recovered[0].failureClass == .cancelled)
+            #expect(recovered[0].finishedAt == finished)
+            #expect(try store.recoverInterruptedSummaryRuns(at: finished).isEmpty)
+        }
+    }
+
     @Test("Live collector status round-trips without watched path content")
     func liveCollectorStatus() throws {
         try withTemporaryStore { store in
@@ -397,14 +420,32 @@ struct LedgerStoreTests {
         #expect(settings.providerSelection == .automatic)
         #expect(settings.automaticSummariesUseLLM == false)
         #expect(settings.generationBudgets.weeklyAllowancePercentLimit == 3)
-        #expect(settings.generationBudgets.dailyTokenLimit == 1_000_000)
+        #expect(settings.generationBudgets.maximumCallsPerDay == 48)
+        #expect(settings.generationBudgets.dailyTokenLimit == 2_000_000)
 
         let legacy =
             #"{"generationBudgets":{"maximumInputBytesPerCall":20480,"maximumEstimatedInputTokensPerCall":24000,"maximumCallsPerDay":8,"dailyTokenLimit":50000,"monthlyTokenLimit":1000000,"processDeadlineSeconds":180}}"#
         try Data(legacy.utf8).write(to: url, options: .atomic)
         settings = try store.load()
-        #expect(settings.generationBudgets.maximumCallsPerDay == 30)
+        #expect(settings.generationBudgets.maximumCallsPerDay == 48)
         #expect(settings.generationBudgets.weeklyCreditLimit == 500)
+
+        let previousDefaults =
+            #"{"generationBudgets":{"version":2,"maximumInputBytesPerCall":262144,"maximumEstimatedInputTokensPerCall":100000,"maximumCallsPerDay":30,"dailyTokenLimit":1000000,"monthlyTokenLimit":20000000,"weeklyCreditLimit":500,"weeklyAllowancePercentLimit":3,"minimumProviderAllowanceRemainingPercent":5,"estimatedOutputTokensPerCall":2000,"processDeadlineSeconds":180}}"#
+        try Data(previousDefaults.utf8).write(to: url, options: .atomic)
+        settings = try store.load()
+        #expect(settings.generationBudgets.maximumCallsPerDay == 48)
+        #expect(settings.generationBudgets.dailyTokenLimit == 2_000_000)
+        #expect(settings.generationBudgets.monthlyTokenLimit == 30_000_000)
+
+        let customPreviousPolicy =
+            #"{"generationBudgets":{"version":2,"maximumInputBytesPerCall":262144,"maximumEstimatedInputTokensPerCall":100000,"maximumCallsPerDay":12,"dailyTokenLimit":700000,"monthlyTokenLimit":9000000,"weeklyCreditLimit":250,"weeklyAllowancePercentLimit":2,"minimumProviderAllowanceRemainingPercent":10,"estimatedOutputTokensPerCall":1000,"processDeadlineSeconds":120}}"#
+        try Data(customPreviousPolicy.utf8).write(to: url, options: .atomic)
+        settings = try store.load()
+        #expect(settings.generationBudgets.maximumCallsPerDay == 12)
+        #expect(settings.generationBudgets.dailyTokenLimit == 700_000)
+        #expect(settings.generationBudgets.monthlyTokenLimit == 9_000_000)
+        #expect(settings.generationBudgets.weeklyAllowancePercentLimit == 2)
         settings.launchAtLoginEnabled = false
         try store.save(settings)
         #expect(try store.load().launchAtLoginEnabled == false)
