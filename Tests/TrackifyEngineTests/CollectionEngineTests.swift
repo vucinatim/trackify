@@ -46,13 +46,13 @@ struct CollectionEngineTests {
     @Test("Cancelling an asynchronous process run terminates its exact child promptly")
     func processCancellation() async throws {
         let runner = ProcessRunner(timeout: 30, terminationGrace: 0.1)
-        let started = ContinuousClock.now
         let task = Task {
             try await runner.runAsync(
                 executable: URL(filePath: "/bin/sleep"), arguments: ["10"],
                 workingDirectory: nil, environment: nil, input: Data(), outputLimit: 1_024)
         }
         try await Task.sleep(for: .milliseconds(80))
+        let cancellationRequestedAt = ContinuousClock.now
         task.cancel()
         do {
             _ = try await task.value
@@ -60,7 +60,7 @@ struct CollectionEngineTests {
         } catch is CancellationError {
             // Expected.
         }
-        #expect(started.duration(to: .now) < .seconds(2))
+        #expect(cancellationRequestedAt.duration(to: .now) < .seconds(2))
     }
 
     @Test("Provider readiness is honest about authentication certainty")
