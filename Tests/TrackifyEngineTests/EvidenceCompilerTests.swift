@@ -492,7 +492,7 @@ struct EvidenceCompilerTests {
         }
     }
 
-    @Test("Summary coordinator persists project structure, compact copy, hierarchy, and stable revisions")
+    @Test("Hourly summaries and programmatic rollups preserve structure and stable identity")
     func canonicalSummaryHierarchy() async throws {
         try await withCompilerStore { store in
             let day = Date(timeIntervalSince1970: 1_754_284_800)
@@ -527,26 +527,28 @@ struct EvidenceCompilerTests {
                 store: store, settings: settings, now: now,
                 calendar: calendar, lookbackDays: 1)
             #expect(initial.issues.isEmpty)
-            #expect(initial.generated.count == 4)
-            let current = try #require(try store.latestSummary(kind: .current))
-            #expect(current.provider == nil)
-            #expect(current.content.compactNarrative.contains("Trackify"))
-            #expect(Set(current.content.projectSections.map(\.project)) == ["Trackify", "ClientApp"])
-            #expect(current.childSummaryIDs.count == 2)
-            #expect(current.coverage.isComplete)
+            #expect(initial.generated.count == 2)
+            let hourly = try #require(try store.latestSummary(kind: .segment))
+            #expect(hourly.provider == .codex)
+            #expect(hourly.content.compactNarrative == "Dense menu line.")
+            #expect(Set(hourly.content.projectSections.map(\.project)) == ["Trackify", "ClientApp"])
+            #expect(hourly.childSummaryIDs.isEmpty)
+            #expect(hourly.coverage.isComplete)
+            #expect(try store.latestSummary(kind: .current) == nil)
+            #expect(await counter.value == 1)
 
             let catchup = await coordinator.refresh(
                 store: store, settings: settings, now: now,
                 calendar: calendar, lookbackDays: 1)
             #expect(catchup.issues.isEmpty)
-            #expect(catchup.generated.count == 3)
-            #expect(await counter.value == 2)
+            #expect(catchup.generated.isEmpty)
+            #expect(await counter.value == 1)
 
             let unchanged = await coordinator.refresh(
                 store: store, settings: settings, now: now,
                 calendar: calendar, lookbackDays: 1)
             #expect(unchanged.generated.isEmpty)
-            #expect(await counter.value == 2)
+            #expect(await counter.value == 1)
 
             try addEvent(
                 "late-summary-work", kind: .testFinished,
@@ -557,10 +559,10 @@ struct EvidenceCompilerTests {
                 store: store, settings: settings, now: now,
                 calendar: calendar, lookbackDays: 1)
             #expect(revised.issues.isEmpty)
-            #expect(revised.generated.count == 3)
+            #expect(revised.generated.isEmpty)
             let segments = try store.summaries(kinds: [.segment], limit: 20)
-            #expect(segments.map(\.revision).max() == 2)
-            #expect(await counter.value == 3)
+            #expect(segments.map(\.revision).max() == 1)
+            #expect(await counter.value == 1)
 
             let reportPeriod = try #require(calendar.dateInterval(of: .day, for: now))
             let run = try ReportQueue().enqueueOnDemand(
@@ -592,8 +594,8 @@ struct EvidenceCompilerTests {
                 settings: TrackifySettings(providerSelection: .localOnly),
                 now: now, calendar: calendar, lookbackDays: 1)
             #expect(local.issues.isEmpty)
-            let localCurrent = try #require(try store.latestSummary(kind: .current))
-            #expect(localCurrent.provider == nil)
+            let localHourly = try #require(try store.latestSummary(kind: .segment))
+            #expect(localHourly.provider == nil)
 
             let counter = ProviderInvocationCounter()
             let coordinator = SummaryCoordinator(
@@ -610,10 +612,9 @@ struct EvidenceCompilerTests {
                     automaticSummariesUseLLM: true),
                 now: now, calendar: calendar, lookbackDays: 1)
             #expect(upgraded.issues.isEmpty)
-            let modelCurrent = try #require(try store.latestSummary(kind: .current))
-            #expect(modelCurrent.provider == nil)
-            #expect(modelCurrent.revision == localCurrent.revision + 1)
+            #expect(try store.latestSummary(kind: .current) == nil)
             #expect(try store.latestSummary(kind: .segment)?.provider == .codex)
+            #expect(try store.latestSummary(kind: .segment)?.revision == localHourly.revision + 1)
             #expect(await counter.value == 1)
         }
     }
@@ -722,7 +723,7 @@ struct EvidenceCompilerTests {
         }
     }
 
-    @Test("Automatic summaries upgrade one leaf per refresh and synthesize a closed day once")
+    @Test("Active completed hours get one AI summary and rollups stay programmatic")
     func automaticSummaryPacing() async throws {
         try await withCompilerStore { store in
             var calendar = Calendar(identifier: .gregorian)
@@ -757,30 +758,100 @@ struct EvidenceCompilerTests {
                 now: day.start.addingTimeInterval(19 * 3_600 + 10 * 60),
                 calendar: calendar, lookbackDays: 1)
             #expect(openDay.issues.isEmpty)
-            #expect(openDay.generated.count == 26)
+            #expect(openDay.generated.count == 13)
             #expect(await counter.value == 1)
-            #expect(try store.summaries(kinds: [.segment], limit: 100).count == 24)
+            #expect(try store.summaries(kinds: [.segment], limit: 100).count == 11)
+            let providerLeaves = try store.summaries(kinds: [.segment], limit: 100)
+                .filter { $0.provider != nil }
+            #expect(providerLeaves.count == 1)
+            #expect(providerLeaves.first?.periodStart == day.start.addingTimeInterval(17 * 3_600))
             #expect(try store.latestSummary(kind: .current)?.provider == nil)
             #expect(try store.latestSummary(kind: .day)?.provider == nil)
 
-            for _ in 0..<23 {
-                let closedDay = await coordinator.refresh(
-                    store: store, settings: settings,
-                    now: day.end.addingTimeInterval(3_600),
-                    calendar: calendar, lookbackDays: 2)
-                #expect(closedDay.issues.isEmpty)
-            }
-            #expect(await counter.value == 25)
+            let closedDay = await coordinator.refresh(
+                store: store, settings: settings,
+                now: day.end.addingTimeInterval(3_600),
+                calendar: calendar, lookbackDays: 2)
+            #expect(closedDay.issues.isEmpty)
+            #expect(await counter.value == 1)
             let finalized = try #require(
                 try store.summaries(
                     overlapping: day, kinds: [.day], includeSuperseded: true, limit: 20
                 ).first { $0.periodStart == day.start && $0.periodEnd == day.end })
-            #expect(finalized.provider == .codex)
+            #expect(finalized.provider == nil)
+            #expect(finalized.childSummaryIDs.count == 12)
         }
     }
 
-    @Test("A bounded summary allowance upgrades the newest segment first")
-    func automaticSummaryRecoveryPrioritizesRecentWork() async throws {
+    @Test("A quiet latest hour never spends provider work on an older backlog")
+    func quietLatestHourDoesNotBackfillWithProvider() async throws {
+        try await withCompilerStore { store in
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+            let seed = Date(timeIntervalSince1970: 1_754_294_400)
+            let day = try #require(calendar.dateInterval(of: .day, for: seed))
+            let repository = try addRepository(
+                "quiet-provider-backlog", name: "Trackify", store: store, at: day.start)
+            try addEvent(
+                "older-work", kind: .gitWorkingTreeChanged,
+                repositoryID: repository.id, state: .inProgress,
+                payload: ["clean": "false", "changedFiles": "1"],
+                at: day.start.addingTimeInterval(9 * 3_600 + 5 * 60), store: store)
+
+            let counter = ProviderInvocationCounter()
+            let coordinator = SummaryCoordinator(
+                providerFactory: { _, _ in StructuredSummaryProvider(counter: counter) },
+                allowanceReader: NoProviderAllowanceReader(),
+                availableProvider: { _, _, _ in .codex })
+            let result = await coordinator.refresh(
+                store: store,
+                settings: TrackifySettings(
+                    providerSelection: .codex,
+                    automaticSummariesUseLLM: true),
+                now: day.start.addingTimeInterval(12 * 3_600 + 30 * 60),
+                calendar: calendar, lookbackDays: 1)
+
+            #expect(result.issues.isEmpty)
+            #expect(await counter.value == 0)
+            let leaf = try #require(try store.latestSummary(kind: .segment))
+            #expect(leaf.provider == nil)
+            let run = try #require(
+                try store.summaryRuns(limit: 10).first { $0.summaryID == leaf.id })
+            #expect(run.selectionMode == .localOnly)
+        }
+    }
+
+    @Test("Quiet hours create no summary and never invoke a provider")
+    func quietHoursDoNotInvokeProvider() async throws {
+        try await withCompilerStore { store in
+            var calendar = Calendar(identifier: .gregorian)
+            calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+            let now = try #require(
+                calendar.date(
+                    from: DateComponents(
+                        year: 2026, month: 8, day: 14, hour: 12, minute: 30)))
+            let counter = ProviderInvocationCounter()
+            let coordinator = SummaryCoordinator(
+                providerFactory: { _, _ in StructuredSummaryProvider(counter: counter) },
+                allowanceReader: NoProviderAllowanceReader(),
+                availableProvider: { _, _, _ in .codex })
+            let result = await coordinator.refresh(
+                store: store,
+                settings: TrackifySettings(
+                    providerSelection: .codex,
+                    automaticSummariesUseLLM: true),
+                now: now, calendar: calendar, lookbackDays: 1)
+
+            #expect(result.issues.isEmpty)
+            #expect(result.generated.isEmpty)
+            #expect(await counter.value == 0)
+            #expect(try store.summaries(limit: 10).isEmpty)
+            #expect(try store.summaryRuns(limit: 10).isEmpty)
+        }
+    }
+
+    @Test("Only the newest completed active hour uses the automatic provider")
+    func automaticSummaryProviderScope() async throws {
         try await withCompilerStore { store in
             var calendar = Calendar(identifier: .gregorian)
             calendar.timeZone = TimeZone(secondsFromGMT: 0)!
@@ -815,7 +886,7 @@ struct EvidenceCompilerTests {
 
             let result = await coordinator.refresh(
                 store: store, settings: settings,
-                now: day.start.addingTimeInterval(10 * 3_600 + 40 * 60),
+                now: day.start.addingTimeInterval(11 * 3_600 + 20 * 60),
                 calendar: calendar, lookbackDays: 1)
 
             #expect(result.issues.isEmpty)
@@ -1024,7 +1095,8 @@ private func saveSegmentSummary(
             generatedAt: start.addingTimeInterval(3_600), state: state,
             content: SummaryContent(narrative: summary),
             evidenceIDs: evidenceIDs, generationSource: .local,
-            generatorVersion: "fixture", promptVersion: "fixture",
+            generatorVersion: SummaryCoordinator.generatorVersion,
+            promptVersion: SummaryCoordinator.promptVersion,
             schemaVersion: "work-summary-v1", sourceFingerprint: id,
             coverage: SummaryCoverage(
                 eligibleEventCount: evidenceIDs.count,

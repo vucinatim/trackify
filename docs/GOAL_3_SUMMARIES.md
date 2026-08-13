@@ -1,9 +1,16 @@
 # Trackify Goal 3: Canonical Work Summaries
 
 Status: Implemented and locally validated
-Last updated: 2026-08-11
+Last updated: 2026-08-14
 
-Summary semantics are currently versioned as `work-summary-v5`. V5 classifies intent from canonical message provenance, never from the UI role alone; live current/day summaries compose locally from closed half-hour leaves, while one provider-authored daily synthesis is generated only after the day closes and its leaves are upgraded. Interrupted runs recover explicitly and every semantic or prompt change invalidates incompatible derived revisions without mutating evidence.
+Summary semantics are versioned as `work-summary-v6`. V6 has one deliberately
+simple cadence: Trackify refreshes the not-yet-finalized current-work snapshot
+programmatically every 15 minutes, generates one permanent provider-backed
+summary for the immediately preceding hour when it contains work, and composes
+daily rollups locally. Older missing hours reconcile locally instead of causing
+a surprise provider backlog after restart or sleep.
+Reports remain independently configurable outputs built from these summaries
+and direct evidence.
 
 Goal 3 separates Trackify's automatic understanding of work from user-directed
 outputs. It replaces the overloaded legacy `WorkReport` concept with two clear,
@@ -27,9 +34,9 @@ After Goal 3:
 2. The menu-bar dropdown shows the latest current-work summary.
 3. The Activity timeline contains summary checkpoints alongside commits,
    conversations, changes, and tests.
-4. Automatic summaries use Codex or Claude when the selected provider is ready
-   and model summaries are enabled, otherwise the same slots receive an honest
-   local summary.
+4. Completed active hours use Codex or Claude when the selected provider is
+   ready and hourly AI summaries are enabled; otherwise the hour receives an
+   honest local fallback.
 5. Reports remain user-configured outputs with useful defaults such as
    Clockify, stand-up, and timesheet descriptions.
 6. Daily and later weekly summaries cover the complete eligible timeline by
@@ -47,12 +54,14 @@ create templates or reporters for summaries. They can choose the summary
 provider policy, pause model generation, inspect provenance, or request a
 refresh, but cannot replace the locked evidence and safety prompt.
 
-Visible summary kinds are:
+Visible built-in summary kinds are:
 
-- **Current work** — the most recent meaningful work context, shown in the
-  menu-bar dropdown.
-- **Today so far** — a rolling daily revision shown on Overview.
-- **Final day** — the closed-day summary used in history.
+- **Current work** — a programmatic snapshot of the not-yet-finalized work,
+  refreshed on quarter-hour boundaries and shown in Overview/menu-bar UI.
+- **Hourly summary** — one permanent Codex/Claude summary for each completed
+  active clock hour, or an explicitly labelled local fallback.
+- **Daily rollup** — a programmatic composition of the day's hourly summaries
+  and current snapshot.
 
 Internal segment and chunk summaries provide complete hierarchical coverage.
 They appear in Activity as compact checkpoints when useful but do not clutter
@@ -103,15 +112,16 @@ filtering, privacy policy, and redaction run before coverage is calculated.
 
 ## 4. Summary hierarchy
 
-The default leaf interval is 30 minutes in the user's current calendar and time
-zone. Empty leaves do not invoke a provider.
+The permanent leaf interval is one clock hour in the user's current calendar
+and time zone. Empty hours do not invoke a provider. Trackify waits 15 minutes
+after an hour closes before finalizing it so local caches have time to flush.
 
 ```text
 eligible ledger events
   -> bounded ordered chunks
-  -> 30-minute segment summary
-  -> current-work / today-so-far revision
-  -> final daily summary
+  -> one completed-hour AI summary
+  -> programmatic current-work snapshot
+  -> programmatic daily rollup
   -> later weekly/monthly summaries
 ```
 
@@ -127,34 +137,30 @@ arrays. Exact child links and transitive evidence provenance remain in the local
 ledger. This keeps a busy day in one coherent provider call without sampling a
 subset or allowing a three-project menu preview to hide a fourth project.
 
-If a late event changes a closed leaf, its source fingerprint changes. Trackify
-creates a new leaf revision and marks dependent current/day summaries stale.
-The next coordinator pass rebuilds the affected ancestry. Revisions are
-immutable and linked with `revisesSummaryID`.
+Once an hour has a successful provider-backed summary it is final. Late evidence
+remains in the authoritative ledger and is available directly to Reports, but
+does not silently change or re-spend the permanent hourly account. A local
+fallback may upgrade to one provider-backed revision after availability or
+budget recovery. Derived records remain immutable and linked by revision.
 
 ## 5. Refresh policy
 
 Summary scheduling is separate from report scheduling.
 
-- A closed active 30-minute segment is summarized once per evidence
-  fingerprint.
-- Current-work and today-so-far summaries refresh only when their child/evidence
-  fingerprint changes.
-- Automatic refresh is rate-limited to at most once per 30 minutes for the same
-  visible slot.
-- A meaningful event can make a summary stale immediately, but the previous
-  successful summary remains visible while regeneration is pending.
-- Quiet intervals, unchanged fingerprints, unavailable providers, and local
-  fallback never block evidence collection.
-- A closed day receives a final summary after all known leaves are current.
-- Each coordinator refresh upgrades at most one provider-backed segment, newest
-  first. Remaining leaves stay local for that pass, so current/today parents are
-  rebuilt immediately and old catch-up cannot monopolize a provider process.
-- A closed-day provider synthesis waits until all active leaves have provider
-  revisions; this prevents repeated daily calls during gradual catch-up.
-- A local summary upgrades to a new immutable model revision when the selected
-  provider later becomes ready. Budget fallback retries in the next budget
-  window; transient invoked-provider failures use a cooldown.
+- At each quarter-hour boundary Trackify refreshes the current programmatic
+  snapshot if meaningful evidence exists.
+- At `HH:15`, the preceding clock hour is eligible for exactly one built-in AI
+  summary if it contains meaningful evidence.
+- Quiet hours produce no card and no provider call.
+- Missing older hours reconcile locally. Automatic refresh never hunts backward
+  for an hour to spend provider work on; historical AI backfill must be an
+  explicit user action.
+- Daily rollups are always local compositions and never consume model budget.
+- Provider unavailability or budget exhaustion creates a visible local fallback
+  for that hour without blocking evidence collection.
+- A local fallback can upgrade after recovery; a successful AI hour is final.
+- Report schedules, manual report generation, prompts, scopes, and provider
+  overrides remain completely separate from this built-in cadence.
 
 Meaningful activity is determined from evidence presence and state changes, not
 a productivity formula. User messages, commits, project changes, working-tree
@@ -195,8 +201,9 @@ The compact narrative is a separate model output, not an arbitrary prefix of
 the full text. It should identify the active projects and the most important
 current state in roughly two dense sentences.
 
-The UI may show `Codex`, `Claude`, or `Local` in provenance details. Provider
-choice changes quality, not the existence of the summary feature.
+The UI shows `Codex`, `Claude`, `Programmatic`, `Programmatic rollup`, or
+`Local fallback` directly on the card. Provider choice changes quality, not
+the existence of the summary feature.
 
 ## 7. Storage model
 

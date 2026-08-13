@@ -119,9 +119,11 @@ public struct SummariesCommand: AsyncParsableCommand {
         @OptionGroup var outputOptions: OutputOptions
         public init() {}
         public func run() throws {
-            let summaries = try storeOptions.makeStore().summaries(limit: limit)
+            let summaries = try storeOptions.makeStore().summaries(limit: min(limit * 4, 5_000))
+                .filter(SummaryCadence.isCanonical)
+                .prefix(limit)
             if outputOptions.json {
-                try JSONOutput.write(SummariesPayload(summaries: summaries))
+                try JSONOutput.write(SummariesPayload(summaries: Array(summaries)))
             } else if summaries.isEmpty {
                 print("No summaries yet.")
             } else {
@@ -185,8 +187,10 @@ public struct SummariesCommand: AsyncParsableCommand {
         public init() {}
         public func run() throws {
             let store = try storeOptions.makeStore()
-            let current = try store.latestSummary(kind: .current)
-            let day = try store.latestSummary(kind: .day)
+            let current = try store.summaries(kinds: [.current], limit: 100)
+                .first(where: SummaryCadence.isCanonical)
+            let day = try store.summaries(kinds: [.day], limit: 100)
+                .first(where: SummaryCadence.isCanonical)
             let runs = try store.summaryRuns(limit: 20)
             if outputOptions.json {
                 try JSONOutput.write(

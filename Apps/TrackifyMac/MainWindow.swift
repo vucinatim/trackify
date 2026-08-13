@@ -295,7 +295,7 @@ private struct OverviewView: View {
                 }
 
                 HStack(alignment: .top, spacing: 14) {
-                    Panel(title: range == .day ? "Summary" : "Daily summaries", subtitle: "What was actually being worked on") {
+                    Panel(title: range == .day ? "Current work" : "Daily summaries", subtitle: "What was actually being worked on") {
                         if summariesInRange.isEmpty {
                             EmptyInline(text: "No summary is available for this range yet")
                         } else {
@@ -688,7 +688,7 @@ private struct ActivityView: View {
     private var emptyIcon: String { filter == .summaries ? "text.document" : "list.bullet.rectangle" }
     private var emptyDescription: String {
         if filter == .summaries {
-            return "Automatic summaries appear here as the evidence-backed timeline develops."
+            return "Completed active hours appear here after their built-in summary is generated."
         }
         if !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || filter != .all {
             return "Try a different filter or search term."
@@ -1481,10 +1481,14 @@ struct SettingsView: View {
                     "Effective provider",
                     value: model.effectiveProvider?.rawValue.capitalized ?? "Local fallback")
                 Toggle(
-                    "Use AI for automatic summaries",
+                    "Use AI for hourly summaries",
                     isOn: Binding(
                         get: { model.automaticSummariesUseLLM },
                         set: { value in Task { await model.setAutomaticSummariesUseLLM(value) } }))
+                Text(
+                    "Trackify updates the open hour programmatically every 15 minutes and summarizes the preceding hour with the selected provider when it contains work. Reports are configured and scheduled separately."
+                )
+                .font(.caption).foregroundStyle(.secondary)
                 ForEach(model.generationCapabilities) { provider in
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
@@ -1787,9 +1791,9 @@ struct GenerationRunPresentation: Identifiable, Equatable {
 
     private static func summaryTitle(_ kind: WorkSummaryKind) -> String {
         switch kind {
-        case .segment: "Automatic half-hour summary"
-        case .current: "Current-work rollup"
-        case .day: "Daily summary"
+        case .segment: "Built-in hourly summary"
+        case .current: "Programmatic current-work snapshot"
+        case .day: "Programmatic daily rollup"
         }
     }
 

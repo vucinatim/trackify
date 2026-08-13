@@ -36,3 +36,11 @@ These are deliberate post-V1 improvements, not hidden release blockers. Add them
     provider-credit ledger authoritative for Trackify-owned usage and add a
     Claude allowance adapter only if Claude publishes a similarly supported,
     read-only local usage contract. Do not scrape either provider's human UI.
+14. `WorkSummaryKind.segment` now means the stable completed-hour summary at the
+    storage boundary. Rename that persisted value only in a future intentional
+    schema-version migration; the current presentation and CLI already use
+    “hourly summary,” so a cosmetic database rewrite would add risk without
+    improving the architecture.
+15. Keep historical AI summary backfill an explicit preview-and-confirm workflow
+    if it is added. Automatic refresh deliberately reconciles older gaps locally
+    and never searches backward for provider work.

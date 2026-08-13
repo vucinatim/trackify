@@ -22,7 +22,7 @@ The same local ledger is available through the macOS menu-bar application and a 
 - Automatic Git repository discovery and deterministic folder-based grouping.
 - Separate versioned Codex CLI/Desktop, Claude Code terminal, and Claude Desktop Code conversation-source adapters.
 - Active evidence hours, LLM turns, commits, files, repository, and line statistics.
-- Automatic 30-minute, current-work, and daily summary revisions with complete eligible-event coverage, deterministic local fallback, and optional Codex or Claude generation.
+- A programmatic current-work snapshot refreshed every 15 minutes, a Codex or Claude summary for the immediately preceding hour when it contains work, and local daily rollups composed from those built-in summaries.
 - Rich summary objects contain an overall narrative, dense menu-bar narrative, explicit per-project sections, intent, outcomes, open work, blockers, statistics, coverage, and provenance.
 - User-configured reports consume canonical summaries plus direct evidence through a persisted, budgeted queue that never blocks collection.
 - Versioned report recipes, immutable evidence-linked artifacts, private/team/client/public privacy profiles, and local clipboard/Markdown/JSON delivery.

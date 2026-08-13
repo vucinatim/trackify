@@ -15,7 +15,7 @@ public struct SummaryRefreshResult: Codable, Equatable, Sendable {
 }
 
 public struct SummaryCoordinator: Sendable {
-    public static let generatorVersion = "work-summary-v5"
+    public static let generatorVersion = "work-summary-v6"
     public static let promptVersion = "work-summary-prompt-v6"
     public static let schemaVersion = "work-summary-v1"
 
@@ -139,95 +139,117 @@ public struct SummaryCoordinator: Sendable {
         var generated: [SummaryID] = []
         var unchanged = 0
         var issues: [String] = []
-        var generatedProviderSegment = false
+        let providerWorkRange = SummaryCadence.providerWorkRange(
+            at: now, calendar: calendar)
         for day in days {
             guard !Task.isCancelled else { break }
-            let cutoff = summaryCutoff(
-                for: day, now: now, today: today, calendar: calendar)
-            guard cutoff > day.start else { continue }
-            let segments: [DateInterval]
+            let isToday = calendar.isDate(day.start, inSameDayAs: today.start)
+            let programmaticCutoff =
+                isToday
+                ? min(SummaryCadence.programmaticBoundary(at: now, calendar: calendar), day.end)
+                : day.end
+            let providerCutoff =
+                isToday
+                ? min(SummaryCadence.completedHourCutoff(at: now, calendar: calendar), day.end)
+                : day.end
+            guard programmaticCutoff > day.start else { continue }
+            let hourlyPeriods: [DateInterval]
             do {
-                segments = try activeHalfHourIntervals(
-                    store: store, in: day, cutoff: cutoff, calendar: calendar)
+                hourlyPeriods = try activeHourlyIntervals(
+                    store: store, in: day, cutoff: providerCutoff, calendar: calendar)
             } catch {
                 issues.append("Could not discover active summary periods: \(error.localizedDescription)")
                 continue
             }
             var leaves: [WorkSummary] = []
-            // Spend a bounded provider allowance on the most recent work first.
-            // Leaves are sorted chronologically again before parent summaries are built.
-            for segment in segments.reversed() {
+            for period in hourlyPeriods {
                 guard !Task.isCancelled else { break }
                 do {
-                    let segmentProvider = generatedProviderSegment ? nil : readyProvider
-                    let segmentMode: ProviderSelectionMode =
-                        readyProvider != nil && segmentProvider == nil ? .localOnly : preferredMode
+                    let isProviderHour =
+                        isToday
+                        && period.start == providerWorkRange.start
+                        && period.end == providerWorkRange.end
+                    let periodMode: ProviderSelectionMode =
+                        isProviderHour ? preferredMode : .localOnly
+                    let periodProvider = isProviderHour ? readyProvider : nil
+                    let periodRecoveryStatus =
+                        isProviderHour ? recoveryBudgetStatus : nil
                     let compilation = try compiler.compile(
-                        store: store, range: segment, cutoff: min(cutoff, segment.end),
+                        store: store, range: period, cutoff: period.end,
                         calendar: calendar)
                     guard compilation.coverage.eligibleEventCount > 0 else { continue }
                     if let existing = try reusableSummary(
                         store: store, settings: settings, kind: .segment,
                         compilation: compilation,
-                        preferredMode: segmentMode, readyProvider: segmentProvider,
-                        recoveryBudgetStatus: recoveryBudgetStatus, now: now,
+                        preferredMode: periodMode, readyProvider: periodProvider,
+                        recoveryBudgetStatus: periodRecoveryStatus, now: now,
                         calendar: calendar)
                     {
                         leaves.append(existing)
                         unchanged += 1
                     } else {
-                        generatedProviderSegment = generatedProviderSegment || segmentProvider != nil
                         let summary = try await generate(
                             store: store, settings: settings, kind: .segment,
                             compilation: compilation, children: [],
-                            preferredMode: segmentMode, readyProvider: segmentProvider,
+                            preferredMode: periodMode, readyProvider: periodProvider,
                             now: now, calendar: calendar)
                         leaves.append(summary)
                         generated.append(summary.id)
                     }
                 } catch {
-                    issues.append("Segment summary failed for \(segment.start): \(error.localizedDescription)")
+                    issues.append("Hourly summary failed for \(period.start): \(error.localizedDescription)")
                 }
             }
 
             guard !Task.isCancelled else { break }
             leaves.sort { $0.periodStart < $1.periodStart }
-            guard !leaves.isEmpty else { continue }
-            if calendar.isDate(day.start, inSameDayAs: now) {
-                let currentStart = max(
-                    day.start,
-                    calendar.date(byAdding: .hour, value: -2, to: cutoff) ?? day.start)
-                let currentLeaves = leaves.filter { $0.periodEnd > currentStart }
-                if !currentLeaves.isEmpty {
-                    do {
-                        let parent = try await generateParentIfChanged(
+            var current: WorkSummary?
+            if isToday,
+                let currentRange = SummaryCadence.currentWorkRange(at: now, calendar: calendar),
+                currentRange.start >= day.start,
+                currentRange.end <= programmaticCutoff
+            {
+                do {
+                    let compilation = try compiler.compile(
+                        store: store, range: currentRange, cutoff: currentRange.end,
+                        calendar: calendar)
+                    if compilation.coverage.eligibleEventCount > 0 {
+                        if let existing = try reusableSummary(
                             store: store, settings: settings, kind: .current,
-                            range: DateInterval(start: currentStart, end: cutoff),
-                            children: currentLeaves,
-                            preferredMode: .localOnly, readyProvider: nil,
-                            recoveryBudgetStatus: nil,
+                            compilation: compilation, preferredMode: .localOnly,
+                            readyProvider: nil, recoveryBudgetStatus: nil,
                             now: now, calendar: calendar)
-                        if let parent { generated.append(parent.id) } else { unchanged += 1 }
-                    } catch {
-                        issues.append("Current-work summary failed: \(error.localizedDescription)")
+                        {
+                            current = existing
+                            unchanged += 1
+                        } else {
+                            let summary = try await generate(
+                                store: store, settings: settings, kind: .current,
+                                compilation: compilation, children: [],
+                                preferredMode: .localOnly, readyProvider: nil,
+                                now: now, calendar: calendar)
+                            current = summary
+                            generated.append(summary.id)
+                        }
                     }
+                } catch {
+                    issues.append("Current-work summary failed: \(error.localizedDescription)")
                 }
             }
 
+            let dayChildren = leaves + [current].compactMap { $0 }
+            guard !dayChildren.isEmpty else { continue }
             do {
-                let parentRange = DateInterval(start: day.start, end: cutoff)
-                let isOpenDay = calendar.isDate(day.start, inSameDayAs: now)
-                let canSynthesizeClosedDay = !isOpenDay && leaves.allSatisfy { $0.provider != nil }
                 let parent = try await generateParentIfChanged(
                     store: store, settings: settings, kind: .day,
-                    range: parentRange, children: leaves,
-                    preferredMode: canSynthesizeClosedDay ? preferredMode : .localOnly,
-                    readyProvider: canSynthesizeClosedDay ? readyProvider : nil,
-                    recoveryBudgetStatus: canSynthesizeClosedDay ? recoveryBudgetStatus : nil,
+                    range: DateInterval(start: day.start, end: programmaticCutoff),
+                    children: dayChildren,
+                    preferredMode: .localOnly, readyProvider: nil,
+                    recoveryBudgetStatus: nil,
                     now: now, calendar: calendar)
                 if let parent { generated.append(parent.id) } else { unchanged += 1 }
             } catch {
-                issues.append("Day summary failed for \(day.start): \(error.localizedDescription)")
+                issues.append("Daily rollup failed for \(day.start): \(error.localizedDescription)")
             }
         }
         return SummaryRefreshResult(generated: generated, unchanged: unchanged, issues: issues)
@@ -711,21 +733,31 @@ public struct SummaryCoordinator: Sendable {
         now: Date,
         calendar: Calendar
     ) throws -> WorkSummary? {
-        guard
-            let existing = try store.summaries(
-                overlapping: compilation.range, kinds: [kind], includeSuperseded: true,
-                limit: 500
-            ).filter({
-                $0.periodStart == compilation.range.start
-                    && $0.periodEnd == compilation.range.end
-                    && $0.sourceFingerprint == compilation.sourceFingerprint
-            }).max(by: { $0.revision < $1.revision })
-        else { return nil }
+        let samePeriod = try store.summaries(
+            overlapping: compilation.range, kinds: [kind], includeSuperseded: true,
+            limit: 500
+        ).filter {
+            $0.periodStart == compilation.range.start
+                && $0.periodEnd == compilation.range.end
+                && $0.generatorVersion == Self.generatorVersion
+                && $0.promptVersion == Self.promptVersion
+                && $0.schemaVersion == Self.schemaVersion
+        }
+
+        // A completed hour gets at most one successful provider-backed summary.
+        // Late evidence remains available to reports directly, but cannot silently
+        // downgrade or repeatedly re-spend the finalized hourly summary.
+        if kind == .segment,
+            let finalized = samePeriod.filter({ $0.provider != nil })
+                .max(by: { $0.revision < $1.revision })
+        {
+            return finalized
+        }
 
         guard
-            existing.generatorVersion == Self.generatorVersion,
-            existing.promptVersion == Self.promptVersion,
-            existing.schemaVersion == Self.schemaVersion
+            let existing = samePeriod.filter({
+                $0.sourceFingerprint == compilation.sourceFingerprint
+            }).max(by: { $0.revision < $1.revision })
         else { return nil }
 
         guard preferredMode != .localOnly, let readyProvider else { return existing }
@@ -786,25 +818,7 @@ public struct SummaryCoordinator: Sendable {
         return origin == .human || origin == .agent
     }
 
-    private func halfHourIntervals(
-        in day: DateInterval,
-        cutoff: Date,
-        calendar: Calendar
-    ) -> [DateInterval] {
-        var values: [DateInterval] = []
-        var start = day.start
-        while start < cutoff {
-            let end = min(
-                calendar.date(byAdding: .minute, value: 30, to: start) ?? start.addingTimeInterval(1_800),
-                cutoff)
-            guard end > start else { break }
-            values.append(DateInterval(start: start, end: end))
-            start = end
-        }
-        return values
-    }
-
-    private func activeHalfHourIntervals(
+    private func activeHourlyIntervals(
         store: LedgerStore,
         in day: DateInterval,
         cutoff: Date,
@@ -813,36 +827,14 @@ public struct SummaryCoordinator: Sendable {
         let events = try store.events(
             from: day.start, through: cutoff, kinds: CoreEvidence.kinds)
         guard !events.isEmpty else { return [] }
-        return halfHourIntervals(in: day, cutoff: cutoff, calendar: calendar).filter { interval in
+        return SummaryCadence.completedHours(
+            in: day, through: cutoff, calendar: calendar
+        ).filter { interval in
             events.contains { event in
                 event.occurredAt >= interval.start && event.occurredAt < interval.end
                     && CoreEvidence.includes(event)
             }
         }
-    }
-
-    /// Canonical summaries only close on a stable half-hour boundary. Repeated
-    /// collection refreshes inside the same slot therefore reuse the same leaf,
-    /// current, and day summaries instead of spending another provider call.
-    private func summaryCutoff(
-        for day: DateInterval,
-        now: Date,
-        today: DateInterval,
-        calendar: Calendar
-    ) -> Date {
-        guard calendar.isDate(day.start, inSameDayAs: today.start) else {
-            return day.end
-        }
-        let components = calendar.dateComponents(
-            [.year, .month, .day, .hour, .minute], from: now)
-        var boundary = DateComponents()
-        boundary.year = components.year
-        boundary.month = components.month
-        boundary.day = components.day
-        boundary.hour = components.hour
-        boundary.minute = ((components.minute ?? 0) / 30) * 30
-        boundary.second = 0
-        return min(max(calendar.date(from: boundary) ?? day.start, day.start), day.end)
     }
 
     private func sanitized(_ content: SummaryContent) -> SummaryContent {

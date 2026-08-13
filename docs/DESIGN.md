@@ -929,16 +929,19 @@ canonical evidence -> WorkSummary -> ReportArtifact -> destination
 message aliases, filters unreachable commits and internal control envelopes,
 redacts secrets, preserves full user and commit text across ordered fragments,
 bounds assistant text with explicit metadata, and fails closed unless every
-eligible evidence identity is covered. It groups active evidence into stable
-closed half-hour slots; quiet slots do not trigger per-slot queries or model
-calls.
+eligible evidence identity is covered. It groups active evidence into completed
+clock hours; quiet hours create no summary run and never invoke a provider. A
+15-minute ingestion grace lets local provider caches settle first.
 
-`SummaryCoordinator` creates immutable segment revisions and composes complete
-segment children into current and day parents. Identity is a source
-fingerprint, not wall-clock refresh frequency. Refreshing twice inside one
-half-hour boundary is idempotent; late evidence creates a new leaf revision and
-therefore new parents. Provider failure and budget exhaustion produce the same
-structured local content without blocking collection.
+`SummaryCoordinator` creates one immutable built-in summary for every completed
+active hour, but only the immediately preceding hour is eligible for automatic
+provider generation. Older gaps reconcile locally so restart, sleep, migration,
+or collection catch-up cannot create a surprise token spike. It refreshes the
+open current-work snapshot programmatically on
+quarter-hour boundaries, and composes daily rollups locally. A successful AI
+hour is final; late evidence remains authoritative and available to Reports
+without silently rewriting that account. Provider failure and budget exhaustion
+produce an explicitly labelled local fallback without blocking collection.
 
 `WorkSummary` stores a full narrative, a separately authored compact narrative,
 project names, project sections, intent, outcomes, open work, blockers, topics,

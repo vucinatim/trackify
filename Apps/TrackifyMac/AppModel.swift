@@ -105,6 +105,7 @@ final class AppModel: ObservableObject {
     private var observedGenerationConfiguration: GenerationConfiguration?
     private var observedBudgetPaused: Bool?
     private var lastFullReconciliation: Date?
+    private var lastAutomaticSummaryBoundary: Date?
 
     init(
         environment: [String: String] = ProcessInfo.processInfo.environment,
@@ -250,6 +251,7 @@ final class AppModel: ObservableObject {
             return
         }
         await refreshEvidence()
+        requestScheduledGenerationIfDue()
         let launchedAt = referenceNow
         schedulerTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -258,6 +260,7 @@ final class AppModel: ObservableObject {
                 await self?.reloadCollectionSettings()
                 await self?.refreshEvidenceIfChanged()
                 guard let self else { return }
+                self.requestScheduledGenerationIfDue()
                 let hasPassedStartupGrace = self.referenceNow.timeIntervalSince(launchedAt) >= 60
                 if hasPassedStartupGrace,
                     self.referenceNow.timeIntervalSince(self.lastFullReconciliation ?? .distantPast) >= 30 * 60
@@ -279,9 +282,12 @@ final class AppModel: ObservableObject {
             do {
                 let now = referenceNow
                 let loadDetailedHistory = hasLoadedFullPresentation
+                let cachedAllowance = generationBudgetStatus.allowance
+                let cachedEffectiveProvider = effectiveProvider
                 let snapshot = try await Task.detached(priority: .utility) { () -> EvidenceAppSnapshot in
                     let paths = try TrackifyPaths.default()
                     let store = try LedgerStore(databaseURL: paths.ledgerURL)
+                    let settings = try SettingsStore(fileURL: paths.settingsURL).load()
                     let day = Self.day(containing: now)
                     let dashboard = try ActivityQueries().dashboard(store: store, range: day, cutoff: now)
                     let hours = try Self.hourActivity(store: store, range: day, cutoff: now)
@@ -292,7 +298,9 @@ final class AppModel: ObservableObject {
                         : day.start
                     let summaries = try store.summaries(
                         overlapping: DateInterval(start: historyStart, end: day.end),
-                        kinds: [.current, .day, .segment], limit: loadDetailedHistory ? 1_000 : 20)
+                        kinds: [.current, .day, .segment], limit: loadDetailedHistory ? 1_000 : 20
+                    )
+                    .filter(SummaryCadence.isCanonical)
                     let repositories = try store.repositoryCatalog()
                     let events =
                         loadDetailedHistory
@@ -309,6 +317,12 @@ final class AppModel: ObservableObject {
                     }
                     let messages = try store.messagesResolvingAliases(ids: Array(messageIDs.prefix(500)))
                     let collectorStatus = try store.collectorStatus()
+                    let budgetProvider = cachedAllowance?.provider ?? cachedEffectiveProvider
+                    let budgetStatus = try GenerationBudgetController(
+                        allowanceReader: CachedAllowanceReader(snapshot: cachedAllowance)
+                    ).status(
+                        store: store, budgets: settings.generationBudgets,
+                        provider: budgetProvider, now: now)
                     return EvidenceAppSnapshot(
                         dashboard: dashboard,
                         repositories: repositories,
@@ -318,7 +332,8 @@ final class AppModel: ObservableObject {
                         timeline: Self.makeTimeline(events: events, summaries: summaries, messages: messages),
                         evidenceQuality: try store.evidenceQuality(),
                         collectorIssueCount: collectorStatus.issueCount,
-                        lastCollection: collectorStatus.observedAt)
+                        lastCollection: collectorStatus.observedAt,
+                        generationBudgetStatus: budgetStatus)
                 }.value
                 dashboard = snapshot.dashboard
                 repositories = snapshot.repositories
@@ -328,6 +343,8 @@ final class AppModel: ObservableObject {
                 evidenceQuality = snapshot.evidenceQuality
                 collectorIssueCount = snapshot.collectorIssueCount
                 lastCollection = snapshot.lastCollection
+                generationBudgetStatus = snapshot.generationBudgetStatus
+                observedBudgetPaused = snapshot.generationBudgetStatus.isPaused
                 presentationLastRefreshedAt = now
                 if let index = historyDays.firstIndex(where: {
                     Calendar.current.isDate($0.date, inSameDayAs: snapshot.currentDay.date)
@@ -417,7 +434,9 @@ final class AppModel: ObservableObject {
 
                 let summaryRange = DateInterval(start: historyStart, end: day.end)
                 let summaries = try store.summaries(
-                    overlapping: summaryRange, kinds: [.current, .day, .segment], limit: 1_000)
+                    overlapping: summaryRange, kinds: [.current, .day, .segment], limit: 1_000
+                )
+                .filter(SummaryCadence.isCanonical)
                 let repositoryCatalog = try store.repositoryCatalog()
                 let events = try store.recentEvents(
                     from: historyStart,
@@ -613,7 +632,7 @@ final class AppModel: ObservableObject {
             }
             isCollecting = false
             await refreshAfterBackgroundMutation()
-            requestGeneration()
+            requestScheduledGenerationIfDue()
         } catch LocalCollectionError.collectionAlreadyRunning {
             isCollecting = false
             errorMessage = nil
@@ -664,6 +683,13 @@ final class AppModel: ObservableObject {
             await self.generateSummariesAndReportsNow()
             self.generationTask = nil
         }
+    }
+
+    private func requestScheduledGenerationIfDue() {
+        let boundary = SummaryCadence.programmaticBoundary(at: referenceNow)
+        guard boundary > (lastAutomaticSummaryBoundary ?? .distantPast) else { return }
+        lastAutomaticSummaryBoundary = boundary
+        requestGeneration()
     }
 
     private func refreshAfterBackgroundMutation() async {
@@ -1177,6 +1203,16 @@ private struct EvidenceAppSnapshot: Sendable {
     let evidenceQuality: EvidenceQualitySnapshot
     let collectorIssueCount: Int
     let lastCollection: Date?
+    let generationBudgetStatus: GenerationBudgetStatus
+}
+
+private struct CachedAllowanceReader: ProviderAllowanceReading {
+    let snapshot: ProviderAllowanceSnapshot?
+
+    func snapshot(provider: SummaryProviderID, now: Date) -> ProviderAllowanceSnapshot? {
+        guard snapshot?.provider == provider else { return nil }
+        return snapshot
+    }
 }
 
 private struct GenerationConfiguration: Equatable {

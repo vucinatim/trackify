@@ -90,7 +90,7 @@ struct AppModelTests {
                     kind: .codex, label: "Codex", detail: "gpt-test"))
         #expect(
             SummaryProvenancePresentation.resolve(rollup, summariesByID: summaries).label
-                == "Local rollup · Codex")
+                == "Programmatic rollup · Codex")
         #expect(
             SummaryProvenancePresentation.resolve(migrated, summariesByID: summaries).kind
                 == .migrated)
