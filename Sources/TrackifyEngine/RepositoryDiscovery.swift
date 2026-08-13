@@ -1,5 +1,14 @@
 import Foundation
 
+public enum RepositoryPathPolicy {
+    public static let generatedDirectoryNames: Set<String> = [
+        ".build", ".cache", ".dart_tool", ".gradle", ".next", ".nuxt",
+        ".pytest_cache", ".tox", ".turbo", ".venv", "DerivedData", "Pods",
+        "__pycache__", "build", "coverage", "dist", "node_modules", "out",
+        "target", "vendor", "venv",
+    ]
+}
+
 public enum GitRepositoryKind: String, Codable, Sendable {
     case regular
     case worktree
@@ -25,9 +34,8 @@ public struct RepositoryDiscoveryOptions: Equatable, Sendable {
     public init(
         maximumDepth: Int = 12,
         maximumDirectories: Int = 100_000,
-        excludedDirectoryNames: Set<String> = [
-            ".git", ".build", ".cache", ".Trash", "DerivedData", "Library", "node_modules", "Pods", "vendor",
-        ],
+        excludedDirectoryNames: Set<String> = RepositoryPathPolicy.generatedDirectoryNames
+            .union([".git", ".Trash", "Library"]),
         excludedPaths: Set<String> = []
     ) {
         self.maximumDepth = maximumDepth

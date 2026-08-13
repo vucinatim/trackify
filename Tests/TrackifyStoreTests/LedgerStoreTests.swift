@@ -224,6 +224,81 @@ struct LedgerStoreTests {
         #expect(try migrated.evidenceQuality().state == .healthy)
     }
 
+    @Test("Codex multi-agent migration repairs legacy unresolved control records")
+    func codexMultiAgentMigrationRepair() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: "trackify-multi-agent-migration-tests-\(UUID().uuidString)", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let databaseURL = directory.appending(path: "trackify.sqlite")
+        do { _ = try LedgerStore(databaseURL: databaseURL) }
+
+        let occurredAt = Date(timeIntervalSince1970: 1_786_647_600).timeIntervalSince1970
+        let queue = try DatabaseQueue(path: databaseURL.path)
+        try queue.write { db in
+            try db.execute(
+                sql: "DELETE FROM grdb_migrations WHERE identifier = '0016_codex_multi_agent_control'")
+            try db.execute(
+                sql: """
+                    INSERT INTO sessions
+                        (id, source, source_session_id, started_at, last_observed_at, state)
+                    VALUES ('multi-agent-session', 'codex', 'multi-agent-session', ?, ?, 'completed')
+                    """,
+                arguments: [occurredAt, occurredAt])
+            for (id, type, turnID, timestamp) in [
+                ("legacy-sub-agent", "event_msg.unknown:sub_agent_activity", "turn-1", occurredAt),
+                ("legacy-inter-agent", "unknown:inter_agent_communication_metadata", nil, occurredAt + 1),
+            ] as [(String, String, String?, Double)] {
+                try db.execute(
+                    sql: """
+                        INSERT INTO conversation_records (
+                            id, source, session_id, source_record_id, source_record_type,
+                            source_turn_id, occurred_at, observed_at, is_meta, is_sidechain,
+                            origin, semantic_kind, disposition, canonical_state,
+                            classification_version, classification_reason, adapter_version)
+                        VALUES (?, 'codex', 'multi-agent-session', ?, ?, ?, ?, ?, 0, 0,
+                                'system', 'unknown', 'unresolved', 'unresolved', 1,
+                                'codex-unknown-record', 6)
+                        """,
+                    arguments: [id, turnID, type, turnID, timestamp, timestamp])
+            }
+            try db.execute(
+                sql: """
+                    INSERT INTO evidence_quality_issues (
+                        id, source, source_key, code, detail, issue_count,
+                        first_observed_at, last_observed_at, affects_work_metrics)
+                    VALUES ('multi-agent-issue', 'codex', 'adapter:codex',
+                            'unresolved-record', 'fixture', 2, ?, ?, 1)
+                    """,
+                arguments: [occurredAt, occurredAt + 1])
+        }
+
+        let migrated = try LedgerStore(databaseURL: databaseURL)
+        let repaired = try DatabaseQueue(path: databaseURL.path).read { db in
+            try Row.fetchAll(
+                db,
+                sql: """
+                    SELECT source_record_type, source_record_id, semantic_kind,
+                           disposition, canonical_state, classification_reason,
+                           adapter_version
+                    FROM conversation_records
+                    WHERE session_id = 'multi-agent-session'
+                    ORDER BY source_record_type
+                    """)
+        }
+        #expect(repaired.count == 2)
+        #expect(repaired.allSatisfy { ($0["source_record_id"] as String?) == nil })
+        #expect(repaired.allSatisfy { ($0["semantic_kind"] as String) == "control" })
+        #expect(repaired.allSatisfy { ($0["disposition"] as String) == "control" })
+        #expect(repaired.allSatisfy { ($0["canonical_state"] as String) == "primary" })
+        #expect(repaired.allSatisfy { ($0["adapter_version"] as Int) == 7 })
+        #expect(
+            Set(repaired.map { $0["source_record_type"] as String })
+                == ["event_msg.sub_agent_activity", "inter_agent_communication_metadata"])
+        #expect(try migrated.evidenceQuality().unresolvedRecordCount == 0)
+        #expect(try migrated.evidenceQuality().state == .healthy)
+    }
+
     @Test("Message-alias migration repairs legacy duplicate normalized messages")
     func messageAliasMigrationRepair() throws {
         let directory = FileManager.default.temporaryDirectory
@@ -458,6 +533,7 @@ struct LedgerStoreTests {
                         "0010_canonical_evidence", "0011_canonical_evidence_lookups",
                         "0012_evidence_coverage", "0013_provider_allowance_attribution",
                         "0014_live_collector_status", "0015_codex_thread_rollback",
+                        "0016_codex_multi_agent_control",
                     ])
             #expect(try store.counts() == LedgerCounts(repositories: 0, commits: 0, sessions: 0, messages: 0, events: 0, observations: 0))
             #expect(try store.health().integrity == "ok")

@@ -18,6 +18,7 @@ enum LedgerSchema {
     static let providerAllowanceMigration = "0013_provider_allowance_attribution"
     static let liveCollectorMigration = "0014_live_collector_status"
     static let codexThreadRollbackMigration = "0015_codex_thread_rollback"
+    static let codexMultiAgentControlMigration = "0016_codex_multi_agent_control"
     static let messageDuplicateTolerance = 0.5
 
     static var migrator: DatabaseMigrator {
@@ -1263,6 +1264,9 @@ enum LedgerSchema {
         migrator.registerMigration(codexThreadRollbackMigration) { db in
             try migrateCodexThreadRollbacks(db)
         }
+        migrator.registerMigration(codexMultiAgentControlMigration) { db in
+            try migrateCodexMultiAgentControlRecords(db)
+        }
         return migrator
     }
 
@@ -1313,6 +1317,66 @@ enum LedgerSchema {
                     arguments: [newID, oldID])
             }
         }
+        try clearResolvedCodexAdapterIssue(db)
+    }
+
+    private static func migrateCodexMultiAgentControlRecords(_ db: Database) throws {
+        let rows = try Row.fetchAll(
+            db,
+            sql: """
+                SELECT id, session_id, source_turn_id, occurred_at, source_record_type
+                FROM conversation_records
+                WHERE source = 'codex' AND source_record_type IN (
+                    'event_msg.unknown:sub_agent_activity',
+                    'unknown:inter_agent_communication_metadata'
+                  )
+                """)
+        for row in rows {
+            let oldID: String = row["id"]
+            let sessionID: String = row["session_id"]
+            let sourceTurnID: String? = row["source_turn_id"]
+            let occurredAt: Double? = row["occurred_at"]
+            let oldType: String = row["source_record_type"]
+            let newType: String
+            let reason: String
+            switch oldType {
+            case "event_msg.unknown:sub_agent_activity":
+                newType = "event_msg.sub_agent_activity"
+                reason = "codex-sub-agent-activity"
+            default:
+                newType = "inter_agent_communication_metadata"
+                reason = "codex-inter-agent-communication-metadata"
+            }
+            let sourceIdentity = [
+                newType, sourceTurnID ?? "", "",
+                occurredAt.map { String($0) } ?? "", "",
+            ].joined(separator: "\u{1f}")
+            let newID = StableHash.sha256(
+                "conversation-record:codex:\(sessionID):\(sourceIdentity)")
+            if try String.fetchOne(
+                db, sql: "SELECT id FROM conversation_records WHERE id = ?",
+                arguments: [newID]) != nil
+            {
+                try db.execute(
+                    sql: "DELETE FROM conversation_records WHERE id = ?",
+                    arguments: [oldID])
+            } else {
+                try db.execute(
+                    sql: """
+                        UPDATE conversation_records
+                        SET id = ?, source_record_id = NULL, source_record_type = ?,
+                            origin = 'system', semantic_kind = 'control',
+                            disposition = 'control', canonical_state = 'primary',
+                            classification_reason = ?, adapter_version = 7
+                        WHERE id = ?
+                        """,
+                    arguments: [newID, newType, reason, oldID])
+            }
+        }
+        try clearResolvedCodexAdapterIssue(db)
+    }
+
+    private static func clearResolvedCodexAdapterIssue(_ db: Database) throws {
         try db.execute(
             sql: """
                 DELETE FROM evidence_quality_issues

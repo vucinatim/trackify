@@ -566,6 +566,11 @@ proven outcomes:
   maintenance from incremental batches;
 - event storms remain capped and coalesced, and triggers arriving during a run
   form exactly one following batch;
+- Git file events are coalesced to their deepest known working-copy root before
+  entering the queue, so generated-output storms cannot exhaust the path cap and
+  accidentally request a full-machine repository scan;
+- common dependency and generated-output directories are excluded by one shared
+  path policy used by discovery and live planning;
 - one known repository change opens only that repository;
 - one provider append opens only the affected JSONL file while retaining every
   unrelated durable cursor;
