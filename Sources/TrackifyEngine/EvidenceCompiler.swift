@@ -371,15 +371,14 @@ public struct EvidenceCompiler: Sendable {
             $0.periodStart >= range.start
                 && $0.periodEnd <= range.end
                 && $0.coverage.isComplete
+                && SummaryCadence.isCanonical($0)
         }
         let dayCandidates = all.filter { $0.kind == .day }
         let candidates: [WorkSummary]
         if let day = dayCandidates.max(by: { $0.generatedAt < $1.generatedAt }) {
             candidates = [day]
-        } else if range.duration >= 20 * 3_600 {
-            candidates = all.filter { $0.kind == .segment }
         } else {
-            candidates = []
+            candidates = all.filter { $0.kind == .segment }
         }
         var latestByPeriod: [String: WorkSummary] = [:]
         for summary in candidates {

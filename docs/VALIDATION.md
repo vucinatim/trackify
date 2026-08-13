@@ -7,9 +7,9 @@ This document records reproducible V1 through Goal 5 checks separately from prod
 ## Completion hardening record — 2026-08-11
 
 - All 157 tests in 10 suites pass; strict formatting, fixture privacy, shell syntax, workflow YAML, Git whitespace, release build, and the schema-v2 two-day simulation pass. The preceding 149-test integration commit also passed with code coverage enabled in CI.
-- Summary v5 uses semantic message origin/kind rather than display role, so human/delegated intent remains prominent while provider notifications and agent progress cannot be mislabeled as user requests. A 12-hour pacing regression proves each refresh upgrades at most one newest half-hour leaf, live current/day composition uses no provider call, and the closed day receives exactly one provider synthesis only after all leaves are upgraded.
+- Summary v6 uses semantic message origin/kind rather than display role. Its cadence tests prove quarter-hour programmatic current-work boundaries, a 15-minute ingestion grace, one permanent AI summary for the immediately preceding active hour, quiet-hour suppression without backward provider hunting, explicit local fallback, and programmatic daily rollups.
 - Default safeguards are 48 calls/day, 2 million tokens/day, 30 million tokens/month, and 3% of the observed weekly Codex allowance. Existing default settings migrate forward while explicit user values remain unchanged.
-- Ctrl-C/SIGTERM and app shutdown now terminate only Trackify-owned provider children. An actual CLI/provider signal drill exited 130 with no orphan, no surviving lease, and an immediate explicit cancelled terminal record. Catch-up spends allowance on at most one newest eligible half-hour per refresh, then rebuilds visible parents locally without waiting behind old gaps.
+- Ctrl-C/SIGTERM and app shutdown terminate only Trackify-owned provider children. An actual CLI/provider signal drill exited 130 with no orphan, no surviving lease, and an immediate explicit cancelled terminal record. Hourly summaries and user-configured reports continue to share the same exact generation lease and interruption recovery.
 - The exact Universal 2 direct-release path passed for app, CLI, and every nested Sparkle component: hardened-runtime ad-hoc signing, deep validation, identifiers, architectures, version/origin, Ed25519 archive signing and verification, and generated appcast. The permanent public key is pinned in source and both release secrets are configured in the protected GitHub environment.
 - CI now requests a Swift 6 runner and validates the current simulation schema instead of the obsolete schema-v1 field set.
 
@@ -144,12 +144,9 @@ than leaving stale running state. Its app signature, doctor result, live process
 and zero-running summary/report checks pass; no `Trackify.app.previous` remains
 in the installation directory.
 
-Final audit build `0.3.0-dev` (`509`) additionally prioritizes the newest closed
-half-hour during bounded provider catch-up and owns generation as a cancellable
-app task. A live Codex drill selected `14:30–15:00` before older gaps; Ctrl-C
-terminated the exact child, exited 130, released the lease, and immediately
-changed the run to `failed/cancelled`. Doctor remained healthy, no running run
-or provider child remained, and the installer rollback was moved to Trash.
+Legacy audit build `0.3.0-dev` (`509`) validated exact cancellation ownership
+using the then-current half-hour cadence. That cadence was superseded by
+Summary v6; the cancellation and lease guarantees remain unchanged.
 
 Installed build `0.3.0-dev` (`510`) applies the final pacing contract: one real
 production-ledger refresh upgraded one provider-backed leaf, rebuilt the local
@@ -441,8 +438,9 @@ The schema-0009 implementation has automated coverage for:
 - full long user-message and commit-message reconstruction across chunks;
 - explicit assistant truncation metadata and a hard 20 KiB packet ceiling;
 - project-structured model content plus dedicated compact menu copy;
-- stable closed-half-hour identity, zero provider work on unchanged refresh,
-  and late-evidence leaf/parent revision rebuilding;
+- quarter-hour programmatic current-work boundaries, completed-hour AI identity,
+  quiet-hour suppression, local-only historical reconciliation, explicit fallback,
+  and restart idempotence;
 - daily configurable-report compilation from complete canonical summaries;
 - provider/report usage aggregation and fallback behavior;
 - fixed-clock AppModel behavior and all prior collection, privacy, queue, and
@@ -459,8 +457,8 @@ empty, historical, chart-tooltip, Activity, Projects, Reports, composer,
 template-editor, and in-window settings screenshot matrix passed.
 
 The production ledger migrated through schema 0009 with a private backup and
-passed SQLite integrity checks. The final Codex-backed day summary covered all
-1,245 eligible events through 29 ordered half-hour children across
+passed SQLite integrity checks. A legacy Summary-v5 Codex-backed day summary
+covered all 1,245 eligible events through 29 ordered half-hour children across
 `novartis-ai-backend`, `novartis-ai-frontend`, `trackify`, and `twittex`. Its
 single 15,679-byte parent packet estimated 19,920 input tokens; Codex reported
 18,499 input and 2,293 output tokens. The structured result contains a detailed
@@ -481,6 +479,17 @@ provider call. The three deliberately triggered live validation generations
 used 72,607 input and 8,511 output tokens in total; the ordinary 50,000-token
 daily limit was restored afterward. Monetary cost remains unknown because the
 Codex CLI did not expose billing data.
+
+Summary-v6 cadence was subsequently packaged and installed as Universal
+development build `517`. All 163 tests pass, including two provider counters:
+a completely quiet ledger creates no summary run, while older work followed by
+a quiet immediately preceding hour reconciles locally and makes zero provider
+invocations. The production ledger structurally exposed one Codex-backed v6
+summary for the completed 00:00–01:00 local hour, a provider-free current-work
+snapshot for 01:00–01:15, and local-only reconciliation for older missing hours.
+No legacy summary version appeared through the standard CLI projection, no
+provider child remained after the new app started, the Universal slices and
+deep signature verified, and production diagnostics remained healthy.
 
 ## Remaining release validation
 

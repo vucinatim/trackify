@@ -1,9 +1,13 @@
 # Trackify Goal 5: Live Evidence and Responsive UI
 
 Status: Implemented and locally validated
-Last updated: 2026-08-11
+Last updated: 2026-08-14
 
-Completion hardening also covers process lifecycle: CLI interruption and app shutdown terminate only Trackify-owned provider children, and exact lease ownership lets the terminating process immediately mark its interrupted runs terminal. Bounded summary catch-up upgrades at most one newest eligible half-hour per refresh, so recovery cannot starve current work or hold a provider process while walking old gaps.
+Completion hardening also covers process lifecycle: CLI interruption and app
+shutdown terminate only Trackify-owned provider children, and exact lease
+ownership lets the terminating process immediately mark its interrupted runs
+terminal. Built-in generation now runs only for completed active hours; quiet
+hours and quarter-hour programmatic refreshes never own a provider process.
 
 Goal 5 makes Trackify feel continuously current without changing what counts as
 work. Supported Git, Codex, and Claude evidence should move the visible current
@@ -91,12 +95,15 @@ already flushed every in-memory event.
 
 Live collection must not turn semantic generation into a noisy stream.
 
-- Canonical 30-minute segment summaries retain their evidence-fingerprint
-  identity and provider budget.
-- New evidence marks the relevant summary ancestry stale immediately.
-- Deterministic current facts may refresh without a provider call.
-- Codex/Claude generation happens only at the established closed-period or
-  explicit recovery boundary.
+- Current-work facts refresh programmatically on 15-minute boundaries.
+- One Codex/Claude summary is generated for each completed active clock hour,
+  after a 15-minute ingestion grace period.
+- Only the immediately preceding hour is provider eligible. Older missing hours
+  reconcile locally, and a quiet preceding hour never causes Trackify to search
+  backward for provider work.
+- Daily rollups remain programmatic and consume no provider budget.
+- A successful hourly AI summary is final; later evidence remains available to
+  reports directly.
 - Reports keep their manual or configured schedule.
 
 The UI can show that a summary is stale or regenerating while continuing to

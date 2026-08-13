@@ -31,7 +31,20 @@ struct SummaryProvenancePresentation: Equatable, Sendable {
                 summariesByID: summariesByID,
                 visited: [])
             guard !providers.isEmpty else {
-                return Self(kind: .local, label: "Local", detail: "Generated deterministically without an AI call")
+                let label: String
+                let detail: String
+                switch summary.kind {
+                case .current:
+                    label = "Programmatic"
+                    detail = "The open hour is updated locally every 15 minutes"
+                case .day:
+                    label = "Programmatic rollup"
+                    detail = "Composed locally from the day's built-in summaries"
+                case .segment:
+                    label = "Local fallback"
+                    detail = "The hourly AI summary could not run"
+                }
+                return Self(kind: .local, label: label, detail: detail)
             }
             let providerLabel: String
             if providers == [.codex] {
@@ -43,8 +56,8 @@ struct SummaryProvenancePresentation: Equatable, Sendable {
             }
             return Self(
                 kind: .localRollup,
-                label: "Local rollup · \(providerLabel)",
-                detail: "Combined locally from underlying \(providerLabel) summaries")
+                label: "Programmatic rollup · \(providerLabel)",
+                detail: "Composed locally from underlying \(providerLabel) hourly summaries")
         }
     }
 

@@ -594,9 +594,11 @@ The earlier hourly/daily “report provider” sections describe the Goal 2 inpu
 compiler retained for configurable outputs. Automatic interpretation now uses
 the canonical summary service:
 
-- closed active half-hours are the only model-backed leaves;
-- each refresh upgrades at most one model-backed half-hour, newest first, while
-  deterministic parents and remaining local leaves complete in the same pass;
+- completed active clock hours are the only model-backed built-in summaries;
+- each hour is finalized once after a 15-minute ingestion grace period;
+- automatic generation considers only the immediately preceding hour; older
+  gaps reconcile locally unless the user explicitly requests historical AI
+  backfill;
 - every eligible user message and commit message is included completely across
   bounded chunks;
 - assistant responses are capped at 1,200 characters per response and carry
@@ -607,16 +609,14 @@ the canonical summary service:
   and blocker lists;
 - Trackify validates lengths, unique/allowed evidence aliases, and structure,
   then deterministically restores any evidenced project omitted by the model;
-- current/day parents consume all complete child summaries in chronological
-  order;
-- a closed-day model synthesis waits until all active leaves have model
-  revisions, so gradual catch-up cannot regenerate the day on every pass;
+- current-work snapshots refresh programmatically every 15 minutes and daily
+  rollups consume hourly summaries in chronological order without an AI call;
 - provider calls, measured tokens, unknown/known costs, failures, and local
   fallbacks are persisted in `summary_runs` and aggregated with report usage;
 - provider unavailability never prevents a summary revision or evidence
   collection.
 
-The app setting `automaticSummariesUseLLM` affects automatic summaries only.
+The app setting `automaticSummariesUseLLM` affects built-in hourly summaries only.
 Configurable report templates and scheduled reporters use their own provider
 override or the selected provider mode. Automatic summary backfill is explicit,
 bounded by CLI/UI policy, fingerprint-idempotent, and can always run locally.
