@@ -43,6 +43,8 @@ struct TimelineEntry: Identifiable, Sendable {
 
 @MainActor
 final class AppModel: ObservableObject {
+    nonisolated static let presentationHistoryDays = 42
+
     @Published private(set) var dashboard: ActivityDashboard?
     @Published private(set) var repositories: [RepositoryCatalogItem] = []
     @Published private(set) var roots: [DiscoveryRoot] = []
@@ -174,6 +176,20 @@ final class AppModel: ObservableObject {
             .max { $0.generatedAt < $1.generatedAt }
     }
 
+    var latestSuccessfulCollectionAt: Date? {
+        liveCollectorStatus.lastCollectionFinishedAt ?? lastCollection
+    }
+
+    func summaryProvenance(for summary: WorkSummary) -> SummaryProvenancePresentation {
+        SummaryProvenancePresentation.resolve(
+            summary,
+            summariesByID: Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0) }))
+    }
+
+    func dismissError() {
+        errorMessage = nil
+    }
+
     deinit {
         schedulerTask?.cancel()
     }
@@ -230,6 +246,7 @@ final class AppModel: ObservableObject {
         }
         if isUIValidation {
             await refresh()
+            FileHandle.standardOutput.write(Data("TRACKIFY_UI_READY\n".utf8))
             return
         }
         await refreshEvidence()
@@ -270,7 +287,8 @@ final class AppModel: ObservableObject {
                     let hours = try Self.hourActivity(store: store, range: day, cutoff: now)
                     let historyStart =
                         loadDetailedHistory
-                        ? Calendar.current.date(byAdding: .day, value: -41, to: day.start)!
+                        ? Calendar.current.date(
+                            byAdding: .day, value: -(Self.presentationHistoryDays - 1), to: day.start)!
                         : day.start
                     let summaries = try store.summaries(
                         overlapping: DateInterval(start: historyStart, end: day.end),
@@ -386,7 +404,8 @@ final class AppModel: ObservableObject {
                 let collectorStatus = try store.collectorStatus()
                 let day = Self.day(containing: now)
                 let dashboard = try ActivityQueries().dashboard(store: store, range: day, cutoff: now)
-                let historyStart = Calendar.current.date(byAdding: .day, value: -41, to: day.start)!
+                let historyStart = Calendar.current.date(
+                    byAdding: .day, value: -(Self.presentationHistoryDays - 1), to: day.start)!
                 let historyRanges = Self.dayRanges(from: historyStart, through: day.end)
                 let historySnapshots = try ActivityQueries().snapshots(
                     store: store, ranges: historyRanges, cutoff: now, calendar: Calendar.current)
@@ -520,6 +539,29 @@ final class AppModel: ObservableObject {
     func hourActivity(for date: Date) async -> [HourActivity] {
         let day = Self.day(containing: date)
         return await hourActivity(from: day.start, through: day.end)
+    }
+
+    func projectActivity(repositoryID: RepositoryID) async -> ActivitySnapshot? {
+        do {
+            let now = referenceNow
+            let calendar = Calendar.current
+            let today = calendar.startOfDay(for: now)
+            let start = calendar.date(
+                byAdding: .day, value: -(Self.presentationHistoryDays - 1), to: today)!
+            return try await Task.detached(priority: .utility) {
+                let paths = try TrackifyPaths.default()
+                let store = try LedgerStore(databaseURL: paths.ledgerURL)
+                return try ActivityQueries().snapshot(
+                    store: store,
+                    range: DateInterval(start: start, end: now),
+                    cutoff: now,
+                    repositoryIDs: [repositoryID],
+                    calendar: calendar)
+            }.value
+        } catch {
+            errorMessage = "Project activity could not be loaded: \(error.localizedDescription)"
+            return nil
+        }
     }
 
     func hourActivity(from start: Date, through end: Date) async -> [HourActivity] {
@@ -843,10 +885,11 @@ final class AppModel: ObservableObject {
                 let settings = try SettingsStore(fileURL: paths.settingsURL).load()
                 return try await ReportQueue().testProvider(id, store: store, settings: settings, now: Date())
             }.value
-            if result.state != .succeeded {
-                errorMessage = result.failureDetail ?? "Provider test did not succeed."
-            }
+            let failure =
+                result.state == .succeeded
+                ? nil : (result.failureDetail ?? "Provider test did not succeed.")
             await refresh()
+            if let failure { errorMessage = failure }
         } catch { errorMessage = "Provider test failed: \(error)" }
     }
 

@@ -1,12 +1,12 @@
 # Trackify Validation Record
 
-Last updated: 2026-08-11
+Last updated: 2026-08-14
 
 This document records reproducible V1 through Goal 5 checks separately from product design. It does not treat a locally built archive as a published release or live update test.
 
 ## Completion hardening record — 2026-08-11
 
-- All 155 tests in 10 suites pass; strict formatting, fixture privacy, shell syntax, workflow YAML, Git whitespace, release build, and the schema-v2 two-day simulation pass. The preceding 149-test integration commit also passed with code coverage enabled in CI.
+- All 157 tests in 10 suites pass; strict formatting, fixture privacy, shell syntax, workflow YAML, Git whitespace, release build, and the schema-v2 two-day simulation pass. The preceding 149-test integration commit also passed with code coverage enabled in CI.
 - Summary v5 uses semantic message origin/kind rather than display role, so human/delegated intent remains prominent while provider notifications and agent progress cannot be mislabeled as user requests. A 12-hour pacing regression proves each refresh upgrades at most one newest half-hour leaf, live current/day composition uses no provider call, and the closed day receives exactly one provider synthesis only after all leaves are upgraded.
 - Default safeguards are 48 calls/day, 2 million tokens/day, 30 million tokens/month, and 3% of the observed weekly Codex allowance. Existing default settings migrate forward while explicit user values remain unchanged.
 - Ctrl-C/SIGTERM and app shutdown now terminate only Trackify-owned provider children. An actual CLI/provider signal drill exited 130 with no orphan, no surviving lease, and an immediate explicit cancelled terminal record. Catch-up spends allowance on at most one newest eligible half-hour per refresh, then rebuilds visible parents locally without waiting behind old gaps.
@@ -182,9 +182,29 @@ triggers, zero consecutive failures, healthy doctor state, and no problems. The
 bundle passed deep signature verification; its migration and installer rollback
 snapshots were moved to Trash after validation.
 
+Installed build `0.3.0-dev` (`514`) completed the UI presentation audit across
+Overview, Activity, Projects, Reports, Settings, and the menu dropdown. Summary
+cards now always distinguish direct Codex/Claude generation, deterministic local
+generation, migrated history, and local rollups backed by AI child summaries;
+coverage labels distinguish complete, partial, unknown, and shortened assistant
+context. The same pass exposed collector freshness and errors, made project
+metrics repository-scoped, merged automatic summary runs into Usage, restored
+template/reporter scope and provider controls, removed raw identifiers and
+invalid legacy artifacts from normal GUI presentation, and standardized search,
+status, time-zone, token, and Evidence-hours terminology. Focused native
+captures covered the populated screens, actual attached New Report and New
+Template sheets, and readiness-gated regression cases. The sheet inspection
+also found and fixed a startup race that could leave inherited report
+instructions blank.
+The validation harness now waits for an explicit completed-model-load signal,
+eliminating false empty screenshots caused by asynchronous startup. The bundled
+app and CLI are Universal 2, the deep signature passes, the installed production
+ledger remains healthy, and the collector converged with no pending work. The
+installer rollback was moved to Trash after verification.
+
 ## Automated checks
 
-- `swift test`: 155 tests across domain, store, engine, adapters, macOS application state, Goal 2 capability discovery, canonical evidence integrity, Codex rollback and multi-agent coordination classification and migration repair, Git event-storm scope coalescing, bounded rebuild coverage, Claude sidechain and compacted-context classification, Claude Desktop Code audit ingestion, live FSEvents planning and delivery, queue isolation/recovery, provider-process cancellation, exact-owner signal recovery, newest-first bounded summary catch-up, dead-owner lease reclamation, interrupted-summary startup recovery, cross-process provider-generation coalescing, weekly allowance attribution, live menu budget state, budget-fallback recovery without retry churn, provider credit rates, budget migration, usage and budgets, versioned templates, independently managed scheduled reporters, pre-compilation repository-group scoping, run-specific instructions, repeated manual generation, canonical summary coverage/upgrades, internal-message filtering, privacy profiles, immutable artifacts, idempotent delivery, stable pagination, dense hourly and one-year/120-repository query scale, deterministic simulation, migrations, privacy, updates, and CLI surfaces.
+- `swift test`: 157 tests across domain, store, engine, adapters, macOS application state, Goal 2 capability discovery, canonical evidence integrity, summary provenance and AI-backed rollup presentation, merged summary/report usage history, Codex rollback and multi-agent coordination classification and migration repair, Git event-storm scope coalescing, bounded rebuild coverage, Claude sidechain and compacted-context classification, Claude Desktop Code audit ingestion, live FSEvents planning and delivery, queue isolation/recovery, provider-process cancellation, exact-owner signal recovery, newest-first bounded summary catch-up, dead-owner lease reclamation, interrupted-summary startup recovery, cross-process provider-generation coalescing, weekly allowance attribution, live menu budget state, budget-fallback recovery without retry churn, provider credit rates, budget migration, usage and budgets, versioned templates, independently managed scheduled reporters, pre-compilation repository-group scoping, run-specific instructions, repeated manual generation, canonical summary coverage/upgrades, internal-message filtering, privacy profiles, immutable artifacts, idempotent delivery, stable pagination, dense hourly and one-year/120-repository query scale, deterministic simulation, migrations, privacy, updates, and CLI surfaces.
 - `swift format lint --recursive --strict`: clean using the repository configuration.
 - `git diff --check`: clean.
 - `scripts/check-fixture-privacy.sh`: sanitized fixture structure and credential/path checks pass.

@@ -49,12 +49,14 @@ struct MenuBarView: View {
 
             if let activity = model.dashboard?.activity {
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: 3), spacing: 10) {
-                    Metric(value: "\(activity.activeHours)", label: "Active hours")
-                    Metric(value: "\(activity.llmTurns)", label: "LLM turns")
-                    Metric(value: "\(activity.commits)", label: "Commits")
-                    Metric(value: "\(activity.filesChanged)", label: "Files")
-                    Metric(value: "+\(activity.additions)/-\(activity.deletions)", label: "Lines")
-                    Metric(value: "\(activity.repositoryIDs.count)", label: "Repositories")
+                    Metric(value: "\(activity.activeHours.formatted())", label: "Evidence hours")
+                    Metric(value: activity.llmTurns.formatted(), label: "LLM turns")
+                    Metric(value: activity.commits.formatted(), label: "Commits")
+                    Metric(value: activity.filesChanged.formatted(), label: "Files")
+                    Metric(
+                        value: "+\(activity.additions.formatted())/−\(activity.deletions.formatted())",
+                        label: "Lines")
+                    Metric(value: activity.repositoryIDs.count.formatted(), label: "Repositories")
                 }
                 if let percent = model.dashboard?.comparison.activeHours.percentChange,
                     model.dashboard?.comparison.activeDays ?? 0 > 0
@@ -108,12 +110,14 @@ struct MenuBarView: View {
             }
 
             if let summary = model.latestCurrentSummary {
+                let provenance = model.summaryProvenance(for: summary)
                 VStack(alignment: .leading, spacing: 7) {
                     HStack(spacing: 8) {
                         Text("CURRENT WORK")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
                         Spacer()
+                        SummaryProvenanceBadge(provenance: provenance)
                         ReportStateLabel(state: summary.state)
                     }
                     Text(summary.content.compactNarrative)
@@ -127,8 +131,6 @@ struct MenuBarView: View {
                                 .lineLimit(1)
                         }
                         Spacer()
-                        Text(summary.provider?.rawValue.capitalized ?? "Local")
-                        Text("·")
                         Text(summary.generatedAt, style: .relative)
                     }
                     .font(.caption2).foregroundStyle(.secondary)
@@ -202,6 +204,7 @@ struct MenuBarView: View {
     private var headline: String {
         if model.collectionPaused { return "Collection paused" }
         if model.degradedMessage != nil { return "Trackify needs attention" }
+        if model.liveCollectorStatus.mode == .stopped { return "Starting Trackify" }
         if model.isRecordingPending { return "Recording new evidence" }
         if model.isAnyCollectionActive { return "Updating evidence" }
         if model.llmBudgetPaused { return "Evidence current · LLM budget paused" }
@@ -212,6 +215,7 @@ struct MenuBarView: View {
     private var collectionStatus: (title: String, color: Color) {
         if model.collectionPaused { return ("Paused", .secondary) }
         if model.degradedMessage != nil { return ("Needs attention", .orange) }
+        if model.liveCollectorStatus.mode == .stopped { return ("Starting", .secondary) }
         if model.isRecordingPending { return ("Recording", .blue) }
         if model.isAnyCollectionActive { return ("Syncing", .blue) }
         if model.llmBudgetPaused { return ("LLM paused", .orange) }

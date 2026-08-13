@@ -42,19 +42,28 @@ ensure_showcase() {
 
 window_id() {
   local target_pid=$1
-  TRACKIFY_CAPTURE_PID="$target_pid" swift -e '
+  local capture_sheet=${2:-0}
+  TRACKIFY_CAPTURE_PID="$target_pid" TRACKIFY_CAPTURE_SHEET="$capture_sheet" swift -e '
     import CoreGraphics
     import Foundation
     let targetPID = Int(ProcessInfo.processInfo.environment["TRACKIFY_CAPTURE_PID"]!)!
+    let captureSheet = ProcessInfo.processInfo.environment["TRACKIFY_CAPTURE_SHEET"] == "1"
     // Menu-bar accessory apps may be rendered by WindowServer before their
     // validation window is assigned to the active Space. Window-ID capture is
     // still deterministic, so include all process windows here.
     let windows = CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID)! as! [[String: Any]]
     for window in windows {
       let owner = window[kCGWindowOwnerName as String] as? String
-      let title = window[kCGWindowName as String] as? String
+      let title = window[kCGWindowName as String] as? String ?? ""
       let ownerPID = window[kCGWindowOwnerPID as String] as? Int
-      if owner == "TrackifyMac", title == "Trackify", ownerPID == targetPID {
+      let layer = window[kCGWindowLayer as String] as? Int
+      let bounds = window[kCGWindowBounds as String] as? [String: Any]
+      let width = bounds?["Width"] as? Double ?? 0
+      let height = bounds?["Height"] as? Double ?? 0
+      let isSheet = title.isEmpty && layer == 0 && width >= 600 && width <= 1_000 && height >= 500 && height <= 900
+      if owner == "TrackifyMac", ownerPID == targetPID,
+        (captureSheet ? isSheet : title == "Trackify")
+      {
         print(window[kCGWindowNumber as String]!)
         break
       }
@@ -102,8 +111,10 @@ capture() {
 
   local id=""
   local attempt
+  local capture_sheet=0
+  [[ -n "$reports_sheet" ]] && capture_sheet=1
   for attempt in {1..60}; do
-    id=$(window_id "$app_pid")
+    id=$(window_id "$app_pid" "$capture_sheet")
     [[ -n "$id" ]] && break
     sleep 0.25
   done
@@ -111,7 +122,19 @@ capture() {
     print -u2 "Trackify window did not appear for '$screen'."
     return 1
   fi
-  sleep 0.5
+  local ready=0
+  for attempt in {1..120}; do
+    if grep -q '^TRACKIFY_UI_READY$' "/tmp/trackify-ui-$name.log"; then
+      ready=1
+      break
+    fi
+    sleep 0.1
+  done
+  if (( ready == 0 )); then
+    print -u2 "Trackify model did not finish loading for '$screen'."
+    return 1
+  fi
+  sleep 0.15
 
   local captured=0
   for attempt in {1..20}; do

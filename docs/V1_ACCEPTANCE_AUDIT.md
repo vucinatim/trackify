@@ -1,7 +1,7 @@
 # Trackify V1 Acceptance Audit
 
 Status: Product source proven; first release and elapsed-runtime gates remain
-Last updated: 2026-08-11
+Last updated: 2026-08-14
 
 ## 1. Audit rule
 
@@ -15,7 +15,7 @@ The detailed command outputs and reference-machine measurements are recorded in 
 ## 2. Current validation baseline
 
 - Strict Swift formatting passes.
-- All 155 tests in 10 suites pass; the preceding 149-test integration revision
+- All 157 tests in 10 suites pass; the preceding 149-test integration revision
   also passed with code coverage enabled in CI.
 - Fixture privacy, shell syntax, workflow YAML, and Git whitespace checks pass.
 - The deterministic two-day simulation produces 9 core events across 2 repositories and 4 sessions: 7 durable conversation messages and 2 commits, with one honestly unfinished session.

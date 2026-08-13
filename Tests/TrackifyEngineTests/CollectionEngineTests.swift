@@ -503,6 +503,14 @@ struct CollectionEngineTests {
                 == ProviderSummary(
                     summary: "Claude summary", topics: [], evidenceAliases: ["provider-event"]))
 
+        let capturingRunner = CapturingSummaryRunner()
+        _ = try await ClaudeSummaryProvider(executable: executable, runner: capturingRunner)
+            .summarize(packet)
+        let prompt = capturingRunner.input
+        #expect(prompt.contains("The user's display time zone is"))
+        #expect(prompt.contains(TimeZone.current.identifier))
+        #expect(prompt.contains("The UI already displays the period"))
+
         for invalidEvidence in [[], ["provider-event", "provider-event"], ["fabricated"]] {
             var rejected = false
             do {
@@ -2111,6 +2119,29 @@ private struct StubSummaryRunner: InputCommandRunning {
         }
         let envelope = Data("{\"structured_output\":\(String(decoding: response, as: UTF8.self))}".utf8)
         return ProcessOutput(status: 0, data: envelope)
+    }
+}
+
+private final class CapturingSummaryRunner: InputCommandRunning, @unchecked Sendable {
+    private let lock = NSLock()
+    private var storedInput = ""
+
+    var input: String { lock.withLock { storedInput } }
+
+    func run(
+        executable: URL,
+        arguments: [String],
+        workingDirectory: URL?,
+        environment: [String: String]?,
+        input: Data,
+        outputLimit: Int
+    ) throws -> ProcessOutput {
+        lock.withLock { storedInput = String(decoding: input, as: UTF8.self) }
+        let response =
+            #"{"summary":"Captured summary","topics":[],"evidenceAliases":["provider-event"]}"#
+        return ProcessOutput(
+            status: 0,
+            data: Data("{\"structured_output\":\(response)}".utf8))
     }
 }
 
