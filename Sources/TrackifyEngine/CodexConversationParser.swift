@@ -2,7 +2,7 @@ import Foundation
 import TrackifyDomain
 
 public struct CodexConversationParser: Sendable {
-    public static let adapterVersion = 6
+    public static let adapterVersion = 7
 
     private struct PendingMessage {
         let sourceRecordID: String?
@@ -168,6 +168,13 @@ public struct CodexConversationParser: Sendable {
                                     date: timestamp, text: text,
                                     workingDirectory: workingDirectory))
                         }
+                    case "sub_agent_activity":
+                        pendingStructuralRecords.append(
+                            PendingStructuralRecord(
+                                sourceRecordID: nil, sourceTurnID: turnID,
+                                recordType: "event_msg.sub_agent_activity", date: timestamp,
+                                workingDirectory: workingDirectory, disposition: .control,
+                                semanticKind: .control, reason: "codex-sub-agent-activity"))
                     case "agent_reasoning", "token_count", "thread_settings_applied", "patch_apply_end", "web_search_end",
                         "context_compacted",
                         "image_generation_end", "exec_command_end", "mcp_tool_call_end",
@@ -231,6 +238,14 @@ public struct CodexConversationParser: Sendable {
                             date: timestamp, text: text,
                             workingDirectory: workingDirectory))
 
+                case "inter_agent_communication_metadata":
+                    pendingStructuralRecords.append(
+                        PendingStructuralRecord(
+                            sourceRecordID: nil, sourceTurnID: nil,
+                            recordType: "inter_agent_communication_metadata", date: timestamp,
+                            workingDirectory: workingDirectory, disposition: .control,
+                            semanticKind: .control,
+                            reason: "codex-inter-agent-communication-metadata"))
                 case "world_state", "compacted":
                     break
                 default:

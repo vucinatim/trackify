@@ -60,7 +60,7 @@ struct LiveCollectionTests {
             catalog: catalog)
 
         #expect(trigger.families == [.git])
-        #expect(trigger.paths == ["/projects/a/Sources/App.swift"])
+        #expect(trigger.paths == ["/projects/a"])
         #expect(plan.gitRoots.count == 1)
         #expect(plan.gitRoots[0].includedRepositories == [URL(filePath: "/projects/a")])
     }
@@ -87,8 +87,39 @@ struct LiveCollectionTests {
             catalog: catalog)
 
         #expect(trigger.families == [.git, .discovery])
+        #expect(trigger.paths == ["/projects/new-repo"])
         #expect(plan.gitRoots.count == 1)
         #expect(plan.gitRoots[0].includedRepositories == nil)
+    }
+
+    @Test("Git path storms collapse to repository scopes and ignore generated output")
+    func coalescesGitPathsBeforeQueueing() throws {
+        let now = Date(timeIntervalSince1970: 1_785_888_000)
+        let root = GitCollectionRoot(path: URL(filePath: "/projects"))
+        let copy = WorkingCopy(
+            id: WorkingCopyID("copy-a"), repositoryID: RepositoryID("repo-a"),
+            canonicalPath: "/projects/a", firstObservedAt: now, lastObservedAt: now)
+        let catalog = makeCatalog(gitRoots: [root], workingCopies: [copy])
+        let changes =
+            (0..<2_500).map {
+                FileSystemChange(
+                    path: "/projects/a/Sources/Generated/File-\($0).swift", rawFlags: 0,
+                    eventID: UInt64($0), observedAt: now)
+            }
+            + [
+                FileSystemChange(
+                    path: "/projects/a/dist/bundle.js", rawFlags: 0,
+                    eventID: 3_000, observedAt: now),
+                FileSystemChange(
+                    path: "/projects/a/target/debug/cache.bin", rawFlags: 0,
+                    eventID: 3_001, observedAt: now),
+            ]
+
+        let trigger = try #require(LiveCollectionPlanner().classify(changes, catalog: catalog))
+
+        #expect(trigger.families == [.git])
+        #expect(trigger.paths == ["/projects/a"])
+        #expect(!trigger.requiresReconciliation)
     }
 
     @Test("Provider append plans one exact conversation file")

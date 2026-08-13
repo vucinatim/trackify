@@ -98,6 +98,28 @@ struct EvidenceIntegrityTests {
         #expect(parsed.normalizedRecords.allSatisfy { $0.provenance.disposition != .unresolved })
     }
 
+    @Test("Codex multi-agent coordination remains non-metric control evidence")
+    func codexMultiAgentControlEvidence() throws {
+        let lines = [
+            #"{"timestamp":"2026-08-13T19:00:00.000Z","type":"session_meta","payload":{"id":"multi-agent","cwd":"/workspace/project"}}"#,
+            #"{"timestamp":"2026-08-13T19:00:01.000Z","type":"turn_context","payload":{"turn_id":"turn-1","cwd":"/workspace/project"}}"#,
+            #"{"timestamp":"2026-08-13T19:00:02.000Z","type":"event_msg","payload":{"type":"sub_agent_activity","event_id":"event-1","agent_thread_id":"agent-1","agent_path":"worker","kind":"started","occurred_at_ms":1786647602000}}"#,
+            #"{"timestamp":"2026-08-13T19:00:03.000Z","type":"inter_agent_communication_metadata","payload":{"trigger_turn":true}}"#,
+        ].map { Data($0.utf8) }
+        let parsed = try CodexConversationParser().parse(
+            lines: lines, fallbackSessionID: "fallback", observedAt: Date())
+        let records = parsed.normalizedRecords.filter {
+            $0.provenance.sourceRecordType == "event_msg.sub_agent_activity"
+                || $0.provenance.sourceRecordType == "inter_agent_communication_metadata"
+        }
+
+        #expect(records.count == 2)
+        #expect(parsed.unknownRecordCount == 0)
+        #expect(records.allSatisfy { $0.provenance.disposition == .control })
+        #expect(records.allSatisfy { $0.provenance.semanticKind == .control })
+        #expect(records.allSatisfy { $0.role == nil && $0.normalizedText == nil })
+    }
+
     @Test("Equal text in distinct authoritative turns remains distinct")
     func repeatedPromptIdentity() throws {
         let lines = [

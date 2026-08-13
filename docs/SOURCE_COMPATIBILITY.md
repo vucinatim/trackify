@@ -127,12 +127,18 @@ agent_message
 task_complete
 thread_settings_applied
 thread_rolled_back
+sub_agent_activity
 ```
 
 Other observed payloads include reasoning, token counts, file changes, tool calls, web search, image generation, and context compaction. V1 imports only fields required for session identity, message text, repository association, run lifecycle, and inspectable work evidence. Raw reasoning, token accounting, encrypted content, audio, image bytes, terminal output, and arbitrary tool payloads are not retained.
 
 `thread_rolled_back` is retained as control evidence. It does not create a work
 message, change historical metrics, or imply that a turn failed.
+
+`sub_agent_activity` events and top-level
+`inter_agent_communication_metadata` envelopes are also retained as control
+evidence. They describe agent coordination rather than an additional developer
+or assistant turn, so they never increase work-message or LLM-turn metrics.
 
 ### 4.3 Lifecycle interpretation
 

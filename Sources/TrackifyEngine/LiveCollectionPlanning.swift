@@ -75,10 +75,6 @@ public struct LiveCollectionPlan: Equatable, Sendable {
 }
 
 public struct LiveCollectionPlanner: Sendable {
-    private static let ignoredGitDirectoryNames: Set<String> = [
-        ".build", ".cache", "DerivedData", "Pods", "node_modules", "vendor",
-    ]
-
     public init() {}
 
     public func classify(
@@ -125,8 +121,10 @@ public struct LiveCollectionPlanner: Sendable {
             guard let root = deepestRoot(containing: path, roots: catalog.gitRoots) else { continue }
             guard !isExcluded(path, root: root) else { continue }
             families.insert(.git)
-            paths.insert(path)
-            if !catalog.workingCopies.contains(where: { isDescendant(path, of: $0.canonicalPath) }) {
+            if let workingCopy = deepestWorkingCopy(containing: path, copies: catalog.workingCopies) {
+                paths.insert(workingCopy.canonicalPath)
+            } else {
+                paths.insert(discoveryScope(for: path, root: root.path.path))
                 families.insert(.discovery)
             }
         }
@@ -221,6 +219,18 @@ public struct LiveCollectionPlanner: Sendable {
             .max { $0.path.path.count < $1.path.path.count }
     }
 
+    private func deepestWorkingCopy(containing path: String, copies: [WorkingCopy]) -> WorkingCopy? {
+        copies.filter { isDescendant(path, of: $0.canonicalPath) }
+            .max { $0.canonicalPath.count < $1.canonicalPath.count }
+    }
+
+    private func discoveryScope(for path: String, root: String) -> String {
+        guard path != root else { return root }
+        let relative = path.dropFirst(root.count + 1)
+        guard let topLevel = relative.split(separator: "/").first else { return root }
+        return root + "/" + topLevel
+    }
+
     private func isExcluded(_ path: String, root: GitCollectionRoot) -> Bool {
         let absoluteExcluded = root.excludedPaths.map { excluded -> String in
             let url = URL(filePath: excluded)
@@ -230,7 +240,7 @@ public struct LiveCollectionPlanner: Sendable {
         if absoluteExcluded.contains(where: { isDescendant(path, of: $0) }) { return true }
         let relative = path == root.path.path ? "" : String(path.dropFirst(root.path.path.count + 1))
         return relative.split(separator: "/").contains {
-            Self.ignoredGitDirectoryNames.contains(String($0))
+            RepositoryPathPolicy.generatedDirectoryNames.contains(String($0))
         }
     }
 
