@@ -102,6 +102,26 @@ struct AppModelTests {
                 == "3/5 covered events · 1 shortened agent response")
     }
 
+    @Test("Menu prefers a direct provider summary over a newer local rollup")
+    func menuPrefersDirectProviderSummary() {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let now = Date(timeIntervalSince1970: 1_786_000_000)
+        let codex = summary(
+            id: "codex-hour", now: now.addingTimeInterval(-1_800),
+            source: .codex, provider: .codex, model: "gpt-test", kind: .segment)
+        let local = summary(
+            id: "local-current", now: now,
+            source: .local, kind: .current)
+
+        #expect(
+            AppModel.preferredMenuSummary(
+                from: [local, codex], now: now, calendar: calendar)?.id == codex.id)
+        #expect(
+            AppModel.preferredMenuSummary(
+                from: [local], now: now, calendar: calendar)?.id == local.id)
+    }
+
     @Test("Usage history combines automatic summaries and user reports")
     func generationHistoryIsComplete() {
         let now = Date(timeIntervalSince1970: 1_786_000_000)
@@ -137,10 +157,11 @@ struct AppModelTests {
         source: SummaryGenerationSource,
         provider: SummaryProviderID? = nil,
         model: String? = nil,
-        children: [SummaryID] = []
+        children: [SummaryID] = [],
+        kind: WorkSummaryKind? = nil
     ) -> WorkSummary {
         WorkSummary(
-            id: SummaryID(id), kind: children.isEmpty ? .segment : .current,
+            id: SummaryID(id), kind: kind ?? (children.isEmpty ? .segment : .current),
             periodStart: now.addingTimeInterval(-1_800), periodEnd: now,
             generatedAt: now, state: .completed,
             content: SummaryContent(narrative: "Summary"),
