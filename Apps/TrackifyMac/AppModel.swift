@@ -167,14 +167,59 @@ final class AppModel: ObservableObject {
     }
 
     var latestCurrentSummary: WorkSummary? {
-        let today = Calendar.current.dateInterval(of: .day, for: referenceNow)
-        let todaySummaries = summaries.filter { summary in
+        Self.preferredProgrammaticSummary(
+            from: summaries, now: referenceNow, calendar: .current)
+    }
+
+    var menuBarSummary: WorkSummary? {
+        Self.preferredMenuSummary(
+            from: summaries, now: referenceNow, calendar: .current)
+    }
+
+    nonisolated static func preferredMenuSummary(
+        from summaries: [WorkSummary],
+        now: Date,
+        calendar: Calendar
+    ) -> WorkSummary? {
+        let todaySummaries = summariesForDay(summaries, now: now, calendar: calendar)
+        let providerBacked = todaySummaries.filter { $0.provider != nil }
+        if let summary = providerBacked.max(by: summaryChronology) {
+            return summary
+        }
+        return preferredProgrammaticSummary(
+            from: todaySummaries, now: now, calendar: calendar)
+    }
+
+    private nonisolated static func preferredProgrammaticSummary(
+        from summaries: [WorkSummary],
+        now: Date,
+        calendar: Calendar
+    ) -> WorkSummary? {
+        let todaySummaries = summariesForDay(summaries, now: now, calendar: calendar)
+        return todaySummaries.filter { $0.kind == .current }
+            .max(by: summaryChronology)
+            ?? todaySummaries.filter { $0.kind == .day }
+            .max(by: summaryChronology)
+    }
+
+    private nonisolated static func summariesForDay(
+        _ summaries: [WorkSummary],
+        now: Date,
+        calendar: Calendar
+    ) -> [WorkSummary] {
+        let today = calendar.dateInterval(of: .day, for: now)
+        return summaries.filter { summary in
             today.map { summary.periodEnd > $0.start && summary.periodStart < $0.end } ?? false
         }
-        return todaySummaries.filter { $0.kind == .current }
-            .max { $0.generatedAt < $1.generatedAt }
-            ?? todaySummaries.filter { $0.kind == .day }
-            .max { $0.generatedAt < $1.generatedAt }
+    }
+
+    private nonisolated static func summaryChronology(
+        _ lhs: WorkSummary,
+        _ rhs: WorkSummary
+    ) -> Bool {
+        if lhs.periodEnd != rhs.periodEnd { return lhs.periodEnd < rhs.periodEnd }
+        if lhs.generatedAt != rhs.generatedAt { return lhs.generatedAt < rhs.generatedAt }
+        return lhs.revision < rhs.revision
     }
 
     var latestSuccessfulCollectionAt: Date? {
@@ -298,7 +343,7 @@ final class AppModel: ObservableObject {
                         : day.start
                     let summaries = try store.summaries(
                         overlapping: DateInterval(start: historyStart, end: day.end),
-                        kinds: [.current, .day, .segment], limit: loadDetailedHistory ? 1_000 : 20
+                        kinds: [.current, .day, .segment], limit: loadDetailedHistory ? 1_000 : 100
                     )
                     .filter(SummaryCadence.isCanonical)
                     let repositories = try store.repositoryCatalog()

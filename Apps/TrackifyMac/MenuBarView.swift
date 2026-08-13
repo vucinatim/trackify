@@ -109,11 +109,11 @@ struct MenuBarView: View {
                 Text("Loading ledger…").foregroundStyle(.secondary)
             }
 
-            if let summary = model.latestCurrentSummary {
+            if let summary = model.menuBarSummary {
                 let provenance = model.summaryProvenance(for: summary)
                 VStack(alignment: .leading, spacing: 7) {
                     HStack(spacing: 8) {
-                        Text("CURRENT WORK")
+                        Text(summary.provider == nil ? "CURRENT WORK" : "LATEST AI SUMMARY")
                             .font(.caption.weight(.semibold))
                             .foregroundStyle(.secondary)
                         Spacer()
