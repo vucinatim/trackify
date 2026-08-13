@@ -69,8 +69,86 @@ struct AppModelTests {
         )
 
         #expect(DashboardMetric.evidenceHours.title == "Evidence hours")
-        #expect(DashboardMetric.evidenceHours.hourlySubtitle == "Evidence items by hour")
+        #expect(DashboardMetric.evidenceHours.hourlySubtitle == "Evidence events by hour")
         #expect(DashboardMetric.evidenceHours.trendValue(snapshot) == 19)
         #expect(DashboardMetric.llmTurns.trendValue(snapshot) == 7)
+    }
+
+    @Test("Summary provenance distinguishes direct AI, local rollups, and migrated history")
+    func summaryProvenanceIsExplicit() {
+        let now = Date(timeIntervalSince1970: 1_786_000_000)
+        let codex = summary(
+            id: "codex", now: now, source: .codex, provider: .codex, model: "gpt-test")
+        let rollup = summary(
+            id: "rollup", now: now, source: .local, children: [codex.id])
+        let migrated = summary(id: "migrated", now: now, source: .migrated)
+        let summaries = [codex.id: codex, rollup.id: rollup, migrated.id: migrated]
+
+        #expect(
+            SummaryProvenancePresentation.resolve(codex, summariesByID: summaries)
+                == SummaryProvenancePresentation(
+                    kind: .codex, label: "Codex", detail: "gpt-test"))
+        #expect(
+            SummaryProvenancePresentation.resolve(rollup, summariesByID: summaries).label
+                == "Local rollup · Codex")
+        #expect(
+            SummaryProvenancePresentation.resolve(migrated, summariesByID: summaries).kind
+                == .migrated)
+        #expect(
+            SummaryCoveragePresentation.label(
+                SummaryCoverage(
+                    eligibleEventCount: 5, coveredEventCount: 3,
+                    truncatedAssistantCount: 1))
+                == "3/5 covered events · 1 shortened agent response")
+    }
+
+    @Test("Usage history combines automatic summaries and user reports")
+    func generationHistoryIsComplete() {
+        let now = Date(timeIntervalSince1970: 1_786_000_000)
+        let summaryRun = SummaryRun(
+            id: SummaryRunID("summary-run"), kind: .segment,
+            periodStart: now.addingTimeInterval(-1_800), periodEnd: now,
+            selectionMode: .codex, effectiveProvider: .codex,
+            effectiveModel: "gpt-test", sourceFingerprint: "source",
+            estimatedInputTokens: 1_200, queuedAt: now, state: .succeeded)
+        let reportRun = ReportRun(
+            id: ReportRunID("report-run"), recipeID: RecipeID("clockify"),
+            recipeVersionID: RecipeVersionID("clockify-v1"),
+            periodStart: now.addingTimeInterval(-3_600), periodEnd: now,
+            intent: .onDemand, selectionMode: .localOnly,
+            compilerVersion: "compiler", promptVersion: "prompt",
+            outputSchemaVersion: "schema", queuedAt: now.addingTimeInterval(-60),
+            state: .succeeded)
+
+        let items = GenerationRunPresentation.merge(
+            summaries: [summaryRun], reports: [reportRun],
+            templateNames: [RecipeID("clockify"): "Clockify entry"])
+
+        #expect(items.count == 2)
+        #expect(items.map(\.kind) == [.summary, .report])
+        #expect(items.first?.provider == "Codex · gpt-test")
+        #expect(items.last?.title == "Clockify entry")
+        #expect(items.last?.usage == "No AI usage")
+    }
+
+    private func summary(
+        id: String,
+        now: Date,
+        source: SummaryGenerationSource,
+        provider: SummaryProviderID? = nil,
+        model: String? = nil,
+        children: [SummaryID] = []
+    ) -> WorkSummary {
+        WorkSummary(
+            id: SummaryID(id), kind: children.isEmpty ? .segment : .current,
+            periodStart: now.addingTimeInterval(-1_800), periodEnd: now,
+            generatedAt: now, state: .completed,
+            content: SummaryContent(narrative: "Summary"),
+            childSummaryIDs: children, generationSource: source,
+            provider: provider, model: model,
+            generatorVersion: "test", promptVersion: "test", schemaVersion: "test",
+            sourceFingerprint: "source-\(id)",
+            coverage: SummaryCoverage(eligibleEventCount: 1, coveredEventCount: 1),
+            revision: 1)
     }
 }

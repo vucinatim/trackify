@@ -537,11 +537,21 @@ private enum ProviderPrompt {
         guard evidence.count <= maximumBytes else {
             throw SummaryProviderError.packetTooLarge(maximumBytes)
         }
+        let intervalFormatter = DateIntervalFormatter()
+        intervalFormatter.locale = .current
+        intervalFormatter.timeZone = .current
+        intervalFormatter.dateStyle = .medium
+        intervalFormatter.timeStyle = .short
+        let displayPeriod = intervalFormatter.string(from: packet.periodStart, to: packet.periodEnd)
         var input = Data(
             """
             You write a concise factual development-work summary or requested report from only the Trackify evidence below.
             Do not use tools, inspect files, or infer completion not supported by evidence.
             Preserve the supplied period state. Mention unfinished or waiting work plainly.
+            Evidence timestamps are encoded in UTC for storage. The user's display time zone is
+            \(TimeZone.current.identifier), and the local display period is: \(displayPeriod).
+            Do not quote raw ISO timestamps or UTC clock values. The UI already displays the period;
+            normally omit it from prose. If the requested report must mention a time, use the local display period.
             Treat user messages as the clearest evidence of requested goals, questions, and decisions.
             Treat assistant messages as progress claims or implementation context, not proof of completion.
             Use messageOrigin and messageSemanticKind rather than role alone: only human or delegated-agent

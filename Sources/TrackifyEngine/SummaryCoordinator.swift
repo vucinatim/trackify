@@ -16,7 +16,7 @@ public struct SummaryRefreshResult: Codable, Equatable, Sendable {
 
 public struct SummaryCoordinator: Sendable {
     public static let generatorVersion = "work-summary-v5"
-    public static let promptVersion = "work-summary-prompt-v5"
+    public static let promptVersion = "work-summary-prompt-v6"
     public static let schemaVersion = "work-summary-v1"
 
     private let compiler: SummaryCoverageCompiler

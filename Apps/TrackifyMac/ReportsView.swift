@@ -10,6 +10,7 @@ struct ReportsView: View {
     @State private var selectedArtifactID: ArtifactID?
     @State private var selectedTemplateID: RecipeID?
     @State private var selectedScheduleID: ReportScheduleID?
+    @State private var hasOpenedValidationSheet = false
 
     init(model: AppModel) {
         self.model = model
@@ -39,7 +40,10 @@ struct ReportsView: View {
             openValidationSheetIfRequested()
         }
         .onChange(of: model.artifacts) { _, _ in selectDefaults() }
-        .onChange(of: model.reportTemplates) { _, _ in selectDefaults() }
+        .onChange(of: model.reportTemplates) { _, _ in
+            selectDefaults()
+            openValidationSheetIfRequested()
+        }
         .onChange(of: model.reportSchedules) { _, _ in selectDefaults() }
         .sheet(item: $sheet) { item in
             switch item.content {
@@ -166,13 +170,18 @@ struct ReportsView: View {
     }
 
     private func openValidationSheetIfRequested() {
+        guard !hasOpenedValidationSheet else { return }
         switch ProcessInfo.processInfo.environment["TRACKIFY_UI_REPORTS_SHEET"] {
         case "new-report":
             sheet = ReportsSheet(.composer(.new(defaultTemplateID: preferredTemplate?.id)))
+            hasOpenedValidationSheet = true
         case "new-template":
-            if let base = preferredTemplate { sheet = ReportsSheet(.template(.new(base: base))) }
+            guard let base = preferredTemplate else { return }
+            sheet = ReportsSheet(.template(.new(base: base)))
+            hasOpenedValidationSheet = true
         case "new-reporter":
             sheet = ReportsSheet(.schedule(nil))
+            hasOpenedValidationSheet = true
         default:
             break
         }
@@ -214,7 +223,11 @@ private struct ReportHistoryView: View {
     @State private var filter: HistoryFilter = .latest
 
     private var reports: [Artifact] {
-        let source = model.artifacts.filter { $0.type == .report }
+        let source = model.artifacts.filter {
+            $0.type == .report
+                && $0.recipeID.rawValue != "legacy-v1-report"
+                && !Self.containsInternalEnvelope($0.content)
+        }
         let visible = filter == .latest ? Self.latestArtifacts(source) : source
         guard !search.isEmpty else { return visible }
         return visible.filter { artifact in
@@ -232,13 +245,13 @@ private struct ReportHistoryView: View {
         HSplitView {
             VStack(spacing: 0) {
                 HStack(spacing: 10) {
-                    SearchField(placeholder: "Search reports", text: $search)
+                    TrackifySearchField("Search reports", text: $search)
                     Picker("History", selection: $filter) {
                         ForEach(HistoryFilter.allCases) { Text($0.title).tag($0) }
                     }
                     .labelsHidden()
                     .pickerStyle(.segmented)
-                    .frame(width: 125)
+                    .frame(width: 150)
                 }
                 .padding(12)
                 Divider()
@@ -313,7 +326,8 @@ private struct ReportHistoryView: View {
     }
 
     private func templateName(_ artifact: Artifact) -> String {
-        model.reportTemplates.first { $0.id == artifact.recipeID }?.recipe.name ?? artifact.recipeID.rawValue
+        model.reportTemplates.first { $0.id == artifact.recipeID }?.recipe.name
+            ?? artifact.recipeID.rawValue.humanizedIdentifier
     }
 
     private func run(for artifact: Artifact) -> ReportRun? {
@@ -322,7 +336,6 @@ private struct ReportHistoryView: View {
 
     private func historyBadge(_ artifact: Artifact) -> String? {
         guard filter == .all else { return nil }
-        if artifact.recipeID.rawValue == "legacy-v1-report" || Self.containsInternalEnvelope(artifact.content) { return "Legacy" }
         let allForPeriod = model.artifacts.filter { Self.historyKey($0) == Self.historyKey(artifact) }
         return allForPeriod.contains { $0.revision > artifact.revision } ? "Superseded" : nil
     }
@@ -331,7 +344,7 @@ private struct ReportHistoryView: View {
 private enum HistoryFilter: String, CaseIterable, Identifiable {
     case latest, all
     var id: Self { self }
-    var title: String { rawValue.capitalized }
+    var title: String { self == .latest ? "Latest" : "All revisions" }
 }
 
 private struct ReportHistoryRow: View {
@@ -391,7 +404,9 @@ private struct ReportDetail: View {
                     Label(artifact.privacyProfile.rawValue.capitalized, systemImage: "lock")
                     if let run {
                         Label(run.effectiveProvider?.rawValue.capitalized ?? "Local", systemImage: "sparkles")
-                        Label("\((run.usage.knownTokenTotal ?? run.estimatedInputTokens ?? 0).formatted()) tokens", systemImage: "number")
+                        if let usageLabel = usageLabel(run) {
+                            Label(usageLabel, systemImage: "number")
+                        }
                     }
                 }
                 .font(.caption).foregroundStyle(.secondary)
@@ -415,6 +430,16 @@ private struct ReportDetail: View {
             .frame(maxWidth: 860, alignment: .leading)
         }
         .onChange(of: artifact.id) { _, _ in instructionsExpanded = false }
+    }
+
+    private func usageLabel(_ run: ReportRun) -> String? {
+        if let measured = run.usage.knownTokenTotal, measured > 0 {
+            return "\(measured.formatted()) measured tokens"
+        }
+        if let estimated = run.estimatedInputTokens, estimated > 0 {
+            return "~\(estimated.formatted()) input tokens"
+        }
+        return nil
     }
 }
 
@@ -453,7 +478,9 @@ private struct ReportComposer: View {
     @State private var repositoryID: RepositoryID?
     @State private var provider: ProviderChoice
     @State private var preview: ReportGenerationPreview?
+    @State private var isPreparingPreview = true
     @State private var advanced = false
+    @State private var isWaitingForInitialTemplate: Bool
 
     init(model: AppModel, seed: ReportComposerSeed, onGenerated: @escaping (ArtifactID?) -> Void) {
         self.model = model
@@ -467,6 +494,7 @@ private struct ReportComposer: View {
         _repositoryID = State(initialValue: seed.repositoryID)
         _provider = State(
             initialValue: seed.provider ?? ProviderChoice(template?.version.providerModeOverride))
+        _isWaitingForInitialTemplate = State(initialValue: seed.instructions == nil && template == nil)
     }
 
     private var template: ReportTemplate? { model.reportTemplates.first { $0.id == templateID } }
@@ -554,7 +582,9 @@ private struct ReportComposer: View {
                     if model.isSummarizing { ProgressView().controlSize(.small) } else { Label("Generate report", systemImage: "sparkles") }
                 }
                 .buttonStyle(.borderedProminent)
-                .disabled(template == nil || model.isSummarizing || instructionError != nil)
+                .disabled(
+                    template == nil || model.isSummarizing || instructionError != nil
+                        || isPreparingPreview || preview == nil)
             }
             .padding(18)
         }
@@ -562,7 +592,12 @@ private struct ReportComposer: View {
             instructions = template?.version.customFocus ?? ""
             repositoryID = nil
             provider = ProviderChoice(template?.version.providerModeOverride)
+            isWaitingForInitialTemplate = template == nil
         }
+        .onChange(of: template?.version.id) { _, _ in
+            hydrateInitialTemplateIfNeeded()
+        }
+        .onAppear { hydrateInitialTemplateIfNeeded() }
         .task(id: previewKey) {
             try? await Task.sleep(for: .milliseconds(250))
             guard !Task.isCancelled else { return }
@@ -576,7 +611,9 @@ private struct ReportComposer: View {
 
     private var previewLine: some View {
         Group {
-            if let preview {
+            if isPreparingPreview {
+                Label("Preparing evidence preview…", systemImage: "ellipsis")
+            } else if let preview {
                 VStack(alignment: .leading, spacing: 5) {
                     Label(
                         "\(preview.evidenceCount) evidence items · about \(preview.estimatedInputTokens.formatted()) input tokens · \(preview.providerMode.displayName)",
@@ -587,7 +624,8 @@ private struct ReportComposer: View {
                     }
                 }
             } else {
-                Label("Preparing evidence preview…", systemImage: "ellipsis")
+                Label("Evidence preview is unavailable. Review the app status above.", systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.orange)
             }
         }
         .font(.caption).foregroundStyle(.secondary)
@@ -626,10 +664,24 @@ private struct ReportComposer: View {
     }
 
     private func updatePreview() async {
-        guard let template, instructionError == nil else { return }
+        guard let template, instructionError == nil else {
+            preview = nil
+            isPreparingPreview = false
+            return
+        }
+        isPreparingPreview = true
+        preview = nil
         preview = await model.previewReport(
             recipeID: template.id, period: selectedPeriod,
             configuration: effectiveConfiguration(template))
+        isPreparingPreview = false
+    }
+
+    private func hydrateInitialTemplateIfNeeded() {
+        guard isWaitingForInitialTemplate, let template else { return }
+        instructions = template.version.customFocus ?? ""
+        provider = ProviderChoice(template.version.providerModeOverride)
+        isWaitingForInitialTemplate = false
     }
 
     private var previewKey: String {
@@ -666,7 +718,9 @@ private struct TemplateLibraryView: View {
     private var templates: [ReportTemplate] {
         model.reportTemplates.filter { template in
             template.id.rawValue != "legacy-v1-report"
-                && (search.isEmpty || template.recipe.name.localizedCaseInsensitiveContains(search))
+                && (search.isEmpty
+                    || template.recipe.name.localizedCaseInsensitiveContains(search)
+                    || (template.version.customFocus?.localizedCaseInsensitiveContains(search) ?? false))
         }
     }
 
@@ -677,7 +731,7 @@ private struct TemplateLibraryView: View {
     var body: some View {
         HSplitView {
             VStack(spacing: 0) {
-                SearchField(placeholder: "Search templates", text: $search).padding(12)
+                TrackifySearchField("Search templates", text: $search).padding(12)
                 Divider()
                 List(selection: $selection) {
                     templateSection("Built-in", items: templates.filter { $0.recipe.isBuiltIn })
@@ -752,6 +806,19 @@ private struct TemplateDetail: View {
                     detailBlock("Audience", value: TemplateAudience(profile: template.version.privacyProfile).title)
                     detailBlock("Format", value: template.version.outputFormat.displayName)
                 }
+                HStack(spacing: 28) {
+                    detailBlock(
+                        "Scope",
+                        value: reportScopeTitle(
+                            repositoryIDs: template.version.repositoryIDs,
+                            groupNames: template.version.groupNames,
+                            model: model))
+                    detailBlock(
+                        "Provider",
+                        value: resolvedProviderTitle(
+                            template.version.providerModeOverride,
+                            effectiveProvider: model.effectiveProvider))
+                }
                 Divider()
                 if !template.recipe.isBuiltIn {
                     Button(template.recipe.isEnabled ? "Archive template" : "Restore template") {
@@ -793,6 +860,8 @@ private struct TemplateEditor: View {
     @State private var style: TemplateStyle
     @State private var length: TemplateLength
     @State private var audience: TemplateAudience
+    @State private var scope: ReportScopeChoice
+    @State private var provider: ProviderChoice
 
     init(model: AppModel, seed: TemplateEditorSeed, onSaved: @escaping (RecipeID) -> Void) {
         self.model = model
@@ -806,11 +875,15 @@ private struct TemplateEditor: View {
         }
         var initial = ReportTemplateDraft(template: seed.template, name: name)
         initial.cadence = .onDemand
-        if seed.intent == .new { initial.customFocus = nil }
         _draft = State(initialValue: initial)
         _style = State(initialValue: TemplateStyle(draftTone: initial.tone))
         _length = State(initialValue: TemplateLength(characters: initial.maximumCharacters))
         _audience = State(initialValue: TemplateAudience(profile: initial.privacyProfile))
+        _scope = State(
+            initialValue: ReportScopeChoice(
+                repositoryIDs: initial.repositoryIDs,
+                groupNames: initial.groupNames))
+        _provider = State(initialValue: ProviderChoice(initial.providerModeOverride))
     }
 
     var body: some View {
@@ -839,6 +912,22 @@ private struct TemplateEditor: View {
                                 Text("Plain").tag(RecipeOutputFormat.plainText)
                                 Text("Markdown").tag(RecipeOutputFormat.markdown)
                             }.labelsHidden().pickerStyle(.segmented)
+                        }
+                    }
+                    HStack(alignment: .top, spacing: 18) {
+                        editorField("Projects") {
+                            Picker("Projects", selection: $scope) {
+                                ForEach(scopeChoices, id: \.self) { choice in
+                                    Text(choice.title(model: model)).tag(choice)
+                                }
+                            }
+                            .labelsHidden()
+                        }
+                        editorField("Provider") {
+                            Picker("Provider", selection: $provider) {
+                                ForEach(ProviderChoice.allCases) { Text($0.title).tag($0) }
+                            }
+                            .labelsHidden()
                         }
                     }
                 }
@@ -886,6 +975,12 @@ private struct TemplateEditor: View {
         draft.audience = audience.audience
         draft.privacyProfile = audience.profile
         draft.cadence = .onDemand
+        var repositoryIDs = draft.repositoryIDs
+        var groupNames = draft.groupNames
+        scope.apply(repositoryIDs: &repositoryIDs, groupNames: &groupNames)
+        draft.repositoryIDs = repositoryIDs
+        draft.groupNames = groupNames
+        draft.providerModeOverride = provider.mode
         Task {
             let id: RecipeID?
             switch seed.intent {
@@ -904,6 +999,10 @@ private struct TemplateEditor: View {
             _ = try ReportRecipeValidator.customFocus(focus)
             return nil
         } catch { return error.localizedDescription }
+    }
+
+    private var scopeChoices: [ReportScopeChoice] {
+        ReportScopeChoice.choices(current: scope, model: model)
     }
 }
 
@@ -989,24 +1088,30 @@ private struct ScheduleLibraryView: View {
     }
 
     var body: some View {
-        HSplitView {
+        Group {
             if model.reportSchedules.isEmpty {
-                ContentUnavailableView("No scheduled reporters", systemImage: "calendar.badge.clock")
-                    .frame(minWidth: 320)
+                ContentUnavailableView(
+                    "No scheduled reporters",
+                    systemImage: "calendar.badge.clock",
+                    description: Text("Create a reporter to generate a chosen template automatically.")
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
-                List(selection: $selection) {
-                    ForEach(model.reportSchedules) { schedule in
-                        ScheduleRow(model: model, schedule: schedule).tag(schedule.id)
+                HSplitView {
+                    List(selection: $selection) {
+                        ForEach(model.reportSchedules) { schedule in
+                            ScheduleRow(model: model, schedule: schedule).tag(schedule.id)
+                        }
+                    }
+                    .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
+                    .frame(minWidth: 320, idealWidth: 380, maxWidth: 440)
+                    if let selected {
+                        ScheduleDetail(model: model, schedule: selected, onEdit: { onEdit(selected) })
+                    } else {
+                        ContentUnavailableView("Select a reporter", systemImage: "calendar.badge.clock")
                     }
                 }
-                .listStyle(.plain)
-                .scrollContentBackground(.hidden)
-                .frame(minWidth: 320, idealWidth: 380, maxWidth: 440)
-            }
-            if let selected {
-                ScheduleDetail(model: model, schedule: selected, onEdit: { onEdit(selected) })
-            } else {
-                ContentUnavailableView("Select a reporter", systemImage: "calendar.badge.clock")
             }
         }
     }
@@ -1026,8 +1131,10 @@ private struct ScheduleRow: View {
             .labelsHidden().toggleStyle(.switch).controlSize(.small)
             VStack(alignment: .leading, spacing: 4) {
                 Text(schedule.name).font(.callout.weight(.semibold))
-                Text("\(schedule.cadence.title) · \(scopeTitle(schedule))")
-                    .font(.caption).foregroundStyle(.secondary)
+                Text(
+                    "\(schedule.cadence.title) · \(reportScopeTitle(repositoryIDs: schedule.repositoryIDs, groupNames: schedule.groupNames, model: model))"
+                )
+                .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
         }
@@ -1042,7 +1149,8 @@ private struct ScheduleDetail: View {
     @State private var confirmingDelete = false
 
     private var templateName: String {
-        model.reportTemplates.first { $0.id == schedule.recipeID }?.recipe.name ?? schedule.recipeID.rawValue
+        model.reportTemplates.first { $0.id == schedule.recipeID }?.recipe.name
+            ?? schedule.recipeID.rawValue.humanizedIdentifier
     }
     private var latestRun: ReportRun? {
         model.reportRuns.filter { $0.scheduleID == schedule.id }.max { $0.queuedAt < $1.queuedAt }
@@ -1063,8 +1171,17 @@ private struct ScheduleDetail: View {
                 }
                 scheduleValue("Template", templateName)
                 scheduleValue("Runs", schedule.cadence.description)
-                scheduleValue("Projects", scopeTitle(schedule))
-                scheduleValue("Provider", ProviderChoice(schedule.providerModeOverride).title)
+                scheduleValue(
+                    "Projects",
+                    reportScopeTitle(
+                        repositoryIDs: schedule.repositoryIDs,
+                        groupNames: schedule.groupNames,
+                        model: model))
+                scheduleValue(
+                    "Provider",
+                    resolvedProviderTitle(
+                        schedule.providerModeOverride,
+                        effectiveProvider: model.effectiveProvider))
                 scheduleValue(
                     "Latest run",
                     latestRun.map { "\($0.state.displayName) · \($0.queuedAt.formatted(date: .abbreviated, time: .shortened))" }
@@ -1101,7 +1218,7 @@ private struct ScheduleEditor: View {
     @State private var name: String
     @State private var templateID: RecipeID
     @State private var cadence: ReportScheduleCadence
-    @State private var repositoryID: RepositoryID?
+    @State private var scope: ReportScopeChoice
     @State private var provider: ProviderChoice
     @State private var isEnabled: Bool
 
@@ -1115,7 +1232,10 @@ private struct ScheduleEditor: View {
         _name = State(initialValue: schedule?.name ?? "Daily work summary")
         _templateID = State(initialValue: schedule?.recipeID ?? defaultTemplate)
         _cadence = State(initialValue: schedule?.cadence ?? .daily)
-        _repositoryID = State(initialValue: schedule?.repositoryIDs.count == 1 ? schedule?.repositoryIDs.first : nil)
+        _scope = State(
+            initialValue: ReportScopeChoice(
+                repositoryIDs: schedule?.repositoryIDs ?? [],
+                groupNames: schedule?.groupNames ?? []))
         _provider = State(initialValue: ProviderChoice(schedule?.providerModeOverride))
         _isEnabled = State(initialValue: schedule?.isEnabled ?? true)
     }
@@ -1138,10 +1258,9 @@ private struct ScheduleEditor: View {
                     Text("Daily").tag(ReportScheduleCadence.daily)
                 }
                 .pickerStyle(.segmented)
-                Picker("Projects", selection: $repositoryID) {
-                    Text("All projects").tag(Optional<RepositoryID>.none)
-                    ForEach(model.repositories, id: \.repository.id) { item in
-                        Text(item.repository.displayName).tag(Optional(item.repository.id))
+                Picker("Projects", selection: $scope) {
+                    ForEach(ReportScopeChoice.choices(current: scope, model: model), id: \.self) { choice in
+                        Text(choice.title(model: model)).tag(choice)
                     }
                 }
                 Picker("Provider", selection: $provider) {
@@ -1164,9 +1283,13 @@ private struct ScheduleEditor: View {
     }
 
     private func save() {
+        var repositoryIDs: [RepositoryID] = []
+        var groupNames: [String] = []
+        scope.apply(repositoryIDs: &repositoryIDs, groupNames: &groupNames)
         let draft = ReportScheduleDraft(
             name: name, recipeID: templateID, cadence: cadence,
-            repositoryIDs: repositoryID.map { [$0] } ?? [],
+            repositoryIDs: repositoryIDs,
+            groupNames: groupNames,
             providerModeOverride: provider.mode, isEnabled: isEnabled)
         Task {
             if let id = await model.saveSchedule(id: schedule?.id, draft: draft) { onSaved(id) }
@@ -1175,28 +1298,6 @@ private struct ScheduleEditor: View {
 }
 
 // MARK: - Shared report controls
-
-private struct SearchField: View {
-    let placeholder: String
-    @Binding var text: String
-    var body: some View {
-        HStack(spacing: 7) {
-            Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-            TextField(placeholder, text: $text).textFieldStyle(.plain)
-            if !text.isEmpty {
-                Button {
-                    text = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                }
-                .buttonStyle(.plain).foregroundStyle(.secondary)
-            }
-        }
-        .padding(.horizontal, 10).frame(height: 30)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 7))
-        .overlay { RoundedRectangle(cornerRadius: 7).stroke(Color.secondary.opacity(0.15)) }
-    }
-}
 
 private struct SheetHeader: View {
     let title: String
@@ -1267,10 +1368,98 @@ private enum ProviderChoice: String, CaseIterable, Identifiable {
     }
 }
 
-private func scopeTitle(_ schedule: ReportSchedule) -> String {
-    if schedule.repositoryIDs.isEmpty { return "All projects" }
-    if schedule.repositoryIDs.count == 1 { return schedule.repositoryIDs[0].rawValue }
-    return "\(schedule.repositoryIDs.count) projects"
+private enum ReportScopeChoice: Hashable {
+    case all
+    case group(String)
+    case repository(RepositoryID)
+    case preserved(repositoryIDs: [RepositoryID], groupNames: [String])
+
+    init(repositoryIDs: [RepositoryID], groupNames: [String]) {
+        if repositoryIDs.isEmpty, groupNames.isEmpty {
+            self = .all
+        } else if repositoryIDs.isEmpty, groupNames.count == 1, let group = groupNames.first {
+            self = .group(group)
+        } else if groupNames.isEmpty, repositoryIDs.count == 1, let repository = repositoryIDs.first {
+            self = .repository(repository)
+        } else {
+            self = .preserved(repositoryIDs: repositoryIDs, groupNames: groupNames)
+        }
+    }
+
+    @MainActor
+    static func choices(current: Self, model: AppModel) -> [Self] {
+        var result: [Self] = [.all]
+        var seenGroups: Set<String> = []
+        for root in model.roots where root.isEnabled && seenGroups.insert(root.displayName).inserted {
+            result.append(.group(root.displayName))
+        }
+        result.append(
+            contentsOf: model.repositories
+                .sorted { $0.repository.displayName.localizedStandardCompare($1.repository.displayName) == .orderedAscending }
+                .map { .repository($0.repository.id) })
+        if case .preserved = current, !result.contains(current) { result.insert(current, at: 1) }
+        return result
+    }
+
+    @MainActor
+    func title(model: AppModel) -> String {
+        switch self {
+        case .all: "All projects"
+        case .group(let name): "Group · \(name)"
+        case .repository(let id): model.repositoryName(id) ?? "Unavailable project"
+        case .preserved(let repositoryIDs, let groupNames):
+            reportScopeTitle(repositoryIDs: repositoryIDs, groupNames: groupNames, model: model)
+        }
+    }
+
+    func apply(repositoryIDs: inout [RepositoryID], groupNames: inout [String]) {
+        switch self {
+        case .all:
+            repositoryIDs = []
+            groupNames = []
+        case .group(let name):
+            repositoryIDs = []
+            groupNames = [name]
+        case .repository(let id):
+            repositoryIDs = [id]
+            groupNames = []
+        case .preserved(let existingRepositories, let existingGroups):
+            repositoryIDs = existingRepositories
+            groupNames = existingGroups
+        }
+    }
+}
+
+@MainActor
+private func reportScopeTitle(
+    repositoryIDs: [RepositoryID],
+    groupNames: [String],
+    model: AppModel
+) -> String {
+    if !groupNames.isEmpty { return groupNames.joined(separator: ", ") }
+    guard !repositoryIDs.isEmpty else { return "All projects" }
+    let names = repositoryIDs.compactMap { model.repositoryName($0) }
+    if names.count == repositoryIDs.count, names.count <= 3 {
+        return names.joined(separator: ", ")
+    }
+    if names.isEmpty {
+        return "\(repositoryIDs.count) unavailable project\(repositoryIDs.count == 1 ? "" : "s")"
+    }
+    return "\(repositoryIDs.count) projects"
+}
+
+private func resolvedProviderTitle(
+    _ mode: ProviderSelectionMode?,
+    effectiveProvider: SummaryProviderID?
+) -> String {
+    let effective = effectiveProvider?.rawValue.capitalized ?? "Local fallback"
+    return switch mode {
+    case nil: "App default · \(effective)"
+    case .automatic: "Automatic · \(effective)"
+    case .codex: "Codex"
+    case .claude: "Claude"
+    case .localOnly: "Local only"
+    }
 }
 
 extension ReportScheduleCadence {
@@ -1309,6 +1498,12 @@ extension ProviderSelectionMode {
 }
 
 extension String {
+    fileprivate var humanizedIdentifier: String {
+        replacingOccurrences(of: "-", with: " ")
+            .replacingOccurrences(of: "_", with: " ")
+            .capitalized
+    }
+
     fileprivate var nilIfEmpty: String? {
         let value = trimmingCharacters(in: .whitespacesAndNewlines)
         return value.isEmpty ? nil : value

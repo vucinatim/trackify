@@ -7,6 +7,7 @@ struct OverviewTrendChart: View {
     let range: DashboardRange
     let metric: DashboardMetric
     let interval: DateInterval
+    let referenceNow: Date
     let hours: [HourActivity]
     private let validationTooltipEdge: Bool
 
@@ -17,11 +18,13 @@ struct OverviewTrendChart: View {
         range: DashboardRange,
         metric: DashboardMetric,
         interval: DateInterval,
+        referenceNow: Date,
         hours: [HourActivity]
     ) {
         self.range = range
         self.metric = metric
         self.interval = interval
+        self.referenceNow = referenceNow
         self.hours = hours
         validationTooltipEdge = ProcessInfo.processInfo.environment["TRACKIFY_UI_CHART_TOOLTIP"] == "edge"
     }
@@ -94,6 +97,13 @@ struct OverviewTrendChart: View {
                 RuleMark(x: .value("Selected hour", hoveredPoint.center))
                     .foregroundStyle(Color.secondary.opacity(0.75))
                     .lineStyle(StrokeStyle(lineWidth: 1, dash: [3, 3]))
+            }
+
+            if interval.contains(referenceNow) {
+                RuleMark(x: .value("Current time", referenceNow))
+                    .foregroundStyle(Color.pink.opacity(0.9))
+                    .lineStyle(StrokeStyle(lineWidth: 1))
+                    .accessibilityLabel("Current time")
             }
         }
         .chartXScale(domain: interval.start...interval.end)

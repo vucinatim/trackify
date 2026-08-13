@@ -34,17 +34,29 @@ struct MainWindow: View {
             }
             .navigationTitle("Trackify")
             .navigationSplitViewColumnWidth(min: 178, ideal: 194, max: 220)
-        } detail: {
-            Group {
-                switch router.selection {
-                case .overview: OverviewView(model: model)
-                case .activity: ActivityView(model: model)
-                case .projects: ProjectsView(model: model)
-                case .reports: ReportsView(model: model)
-                case .settings: SettingsView(model: model, updates: updates)
-                }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                SidebarRuntimeStatus(model: model)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+        } detail: {
+            VStack(spacing: 0) {
+                if let message = model.degradedMessage {
+                    AppStatusBanner(
+                        message: message,
+                        canDismiss: model.errorMessage != nil,
+                        review: { router.selection = .settings },
+                        dismiss: model.dismissError)
+                }
+                Group {
+                    switch router.selection {
+                    case .overview: OverviewView(model: model)
+                    case .activity: ActivityView(model: model)
+                    case .projects: ProjectsView(model: model)
+                    case .reports: ReportsView(model: model)
+                    case .settings: SettingsView(model: model, updates: updates)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            }
         }
         .task { await model.refresh() }
     }
@@ -82,7 +94,7 @@ enum DashboardMetric: String, CaseIterable, Identifiable {
     }
     var trendTitle: String {
         switch self {
-        case .evidenceHours: "Evidence items"
+        case .evidenceHours: "Evidence events"
         default: title
         }
     }
@@ -260,6 +272,7 @@ private struct OverviewView: View {
                                 range: range,
                                 metric: selectedMetric,
                                 interval: trendInterval,
+                                referenceNow: model.referenceNow,
                                 hours: trendHours
                             )
                             .frame(height: 190)
@@ -288,7 +301,10 @@ private struct OverviewView: View {
                         } else {
                             VStack(spacing: 0) {
                                 ForEach(Array(summariesInRange.prefix(7)), id: \.id) { summary in
-                                    SummaryOverviewCard(summary: summary, copy: model.copy)
+                                    SummaryOverviewCard(
+                                        summary: summary,
+                                        provenance: model.summaryProvenance(for: summary),
+                                        copy: model.copy)
                                     if summary.id != summariesInRange.prefix(7).last?.id { Divider() }
                                 }
                             }
@@ -547,6 +563,7 @@ private struct ActivityView: View {
     private var entries: [TimelineEntry] {
         let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
         let repositoryNames = repositoryNamesByID
+        let summaries = summariesByID
         return model.timeline.filter { entry in
             let matchesKind: Bool
             switch filter {
@@ -563,6 +580,11 @@ private struct ActivityView: View {
                 || (entry.repositoryID.flatMap { repositoryNames[$0] }?.localizedCaseInsensitiveContains(trimmedQuery)
                     ?? false)
                 || messageRoleSearchText(entry.messageRole).localizedCaseInsensitiveContains(trimmedQuery)
+                || (entry.source?.rawValue.localizedCaseInsensitiveContains(trimmedQuery) ?? false)
+                || (entry.state.map(humanState)?.localizedCaseInsensitiveContains(trimmedQuery) ?? false)
+                || (summaries[entry.id].map {
+                    model.summaryProvenance(for: $0).label.localizedCaseInsensitiveContains(trimmedQuery)
+                } ?? false)
         }
     }
 
@@ -578,7 +600,7 @@ private struct ActivityView: View {
                 title: "Activity",
                 subtitle: "Search and filter the chronological work ledger"
             ) {
-                SearchField("Search activity", text: $query)
+                TrackifySearchField("Search activity", text: $query)
                     .frame(width: 260)
             }
             .padding(24)
@@ -611,7 +633,10 @@ private struct ActivityView: View {
                                 ForEach(group.entries) { entry in
                                     Group {
                                         if entry.kind == .summary, let summary = summaries[entry.id] {
-                                            SummaryActivityCard(summary: summary, copy: model.copy)
+                                            SummaryActivityCard(
+                                                summary: summary,
+                                                provenance: model.summaryProvenance(for: summary),
+                                                copy: model.copy)
                                         } else {
                                             TimelineRow(
                                                 entry: entry,
@@ -704,6 +729,9 @@ private struct TimelineRow: View {
             VStack(alignment: .leading, spacing: 7) {
                 HStack(spacing: 8) {
                     Text(label).font(.caption.weight(.semibold)).foregroundStyle(tint)
+                    if let sourceLabel {
+                        Text(sourceLabel).font(.caption).foregroundStyle(.secondary)
+                    }
                     if let repositoryName { Text(repositoryName).font(.caption).foregroundStyle(.secondary) }
                     if let state = entry.state, state != "completed" { StateBadge(state: state) }
                     Spacer()
@@ -733,6 +761,15 @@ private struct TimelineRow: View {
         }
     }
 
+    private var sourceLabel: String? {
+        guard entry.kind == .conversation else { return nil }
+        return switch entry.source {
+        case .some(.codex): "Codex"
+        case .some(.claude): "Claude"
+        default: nil
+        }
+    }
+
     private var icon: String {
         switch entry.kind {
         case .summary: "text.document.fill"
@@ -755,6 +792,7 @@ private struct TimelineRow: View {
 
 private struct SummaryActivityCard: View {
     let summary: WorkSummary
+    let provenance: SummaryProvenancePresentation
     let copy: (String) -> Void
     @State private var expanded = false
 
@@ -763,9 +801,10 @@ private struct SummaryActivityCard: View {
             HStack(spacing: 8) {
                 Image(systemName: "doc.text.fill").foregroundStyle(.indigo)
                 Text("Summary").font(.caption.weight(.semibold)).foregroundStyle(.indigo)
+                SummaryProvenanceBadge(provenance: provenance)
                 StateBadge(state: summary.state.rawValue)
                 Spacer()
-                Text(summary.periodEnd, format: .dateTime.hour().minute())
+                Text(summaryPeriodLabel)
                     .font(.caption.monospacedDigit()).foregroundStyle(.tertiary)
             }
             Text(summary.content.narrative).font(.body.weight(.medium)).lineLimit(expanded ? nil : 4)
@@ -780,11 +819,10 @@ private struct SummaryActivityCard: View {
                 }
             }
             HStack {
-                Label("\(summary.coverage.coveredEventCount) covered events", systemImage: "list.bullet.rectangle")
-                if expanded {
+                Label(SummaryCoveragePresentation.label(summary.coverage), systemImage: "list.bullet.rectangle")
+                if expanded, let detail = provenance.detail {
                     Text("·")
-                    Text(summary.provider?.rawValue.capitalized ?? "Local")
-                    if let model = summary.model { Text("· \(model)") }
+                    Text(detail)
                 }
                 Spacer()
                 Button(expanded ? "Less" : "Details") { expanded.toggle() }.buttonStyle(.link)
@@ -801,6 +839,12 @@ private struct SummaryActivityCard: View {
         .background(Color.indigo.opacity(0.07), in: RoundedRectangle(cornerRadius: 12))
         .overlay { RoundedRectangle(cornerRadius: 12).stroke(Color.indigo.opacity(0.18)) }
         .padding(.horizontal, 30).padding(.bottom, 14)
+    }
+
+    private var summaryPeriodLabel: String {
+        let start = summary.periodStart.formatted(.dateTime.hour().minute())
+        let end = summary.periodEnd.formatted(.dateTime.hour().minute())
+        return "\(start)–\(end)"
     }
 }
 
@@ -838,7 +882,7 @@ private struct ProjectsView: View {
             } else {
                 HSplitView {
                     VStack(spacing: 0) {
-                        SearchField("Filter repositories", text: $searchText)
+                        TrackifySearchField("Filter repositories", text: $searchText)
                             .padding(12)
                         Divider()
                         List(selection: $selectedID) {
@@ -894,10 +938,9 @@ private struct ProjectListRow: View {
 private struct ProjectDetail: View {
     let item: RepositoryCatalogItem
     @ObservedObject var model: AppModel
+    @State private var activity: ActivitySnapshot?
+    @State private var isLoadingActivity = false
     private var entries: [TimelineEntry] { model.timeline.filter { $0.repositoryID == item.repository.id } }
-    private var commits: Int { entries.count { $0.kind == .commit } }
-    private var prompts: Int { entries.count { $0.messageRole == .user } }
-    private var agentUpdates: Int { entries.count { $0.messageRole == .assistant } }
 
     var body: some View {
         ScrollView {
@@ -912,16 +955,33 @@ private struct ProjectDetail: View {
                         Text(item.discoveryRootName ?? "Other").font(.subheadline).foregroundStyle(.secondary)
                     }
                 }
-                HStack(spacing: 12) {
-                    CompactMetric(value: commits.formatted(), label: "Recent commits", tint: .blue)
-                    CompactMetric(value: prompts.formatted(), label: "User prompts", tint: .blue)
-                    CompactMetric(value: agentUpdates.formatted(), label: "Agent updates", tint: .purple)
+                VStack(alignment: .leading, spacing: 8) {
+                    Text("LAST \(AppModel.presentationHistoryDays) DAYS")
+                        .font(.caption2.weight(.bold)).foregroundStyle(.secondary)
+                    HStack(spacing: 12) {
+                        CompactMetric(
+                            value: metricValue(\.activeHours), label: "Evidence hours", tint: .indigo)
+                        CompactMetric(value: metricValue(\.llmTurns), label: "LLM turns", tint: .purple)
+                        CompactMetric(value: metricValue(\.commits), label: "Commits", tint: .blue)
+                    }
                 }
                 Panel(title: "Repository", subtitle: nil) {
                     VStack(spacing: 12) {
                         LabeledContent("Branch", value: item.workingCopy.branch ?? "Unknown")
+                        if let head = item.workingCopy.headCommit {
+                            Divider()
+                            LabeledContent("HEAD", value: String(head.prefix(12)))
+                        }
                         Divider()
-                        LabeledContent("Path", value: item.workingCopy.canonicalPath)
+                        LabeledContent("Path") {
+                            Text(item.workingCopy.canonicalPath).textSelection(.enabled)
+                        }
+                        if let remote = item.repository.remoteIdentity {
+                            Divider()
+                            LabeledContent("Remote") {
+                                Text(remote).textSelection(.enabled).lineLimit(2)
+                            }
+                        }
                         Divider()
                         LabeledContent(
                             "Last observed",
@@ -929,9 +989,9 @@ private struct ProjectDetail: View {
                         )
                     }
                 }
-                Panel(title: "Recent evidence", subtitle: "Latest entries associated with this repository") {
+                Panel(title: "Recent evidence", subtitle: "Latest loaded entries associated with this repository") {
                     if entries.isEmpty {
-                        EmptyInline(text: "No activity in the current history window")
+                        EmptyInline(text: "No recent entries are available in the loaded timeline")
                     } else {
                         VStack(spacing: 0) {
                             ForEach(Array(entries.prefix(6))) { entry in
@@ -957,6 +1017,16 @@ private struct ProjectDetail: View {
             }
             .padding(28).frame(maxWidth: 760, alignment: .leading)
         }
+        .task(id: item.repository.id) {
+            isLoadingActivity = true
+            activity = await model.projectActivity(repositoryID: item.repository.id)
+            isLoadingActivity = false
+        }
+    }
+
+    private func metricValue(_ keyPath: KeyPath<ActivitySnapshot, Int>) -> String {
+        if let activity { return activity[keyPath: keyPath].formatted() }
+        return isLoadingActivity ? "…" : "0"
     }
 
     private func projectIcon(_ entry: TimelineEntry) -> String {
@@ -1013,39 +1083,74 @@ extension PageHeader where Actions == EmptyView {
     }
 }
 
-private struct SearchField: View {
-    let prompt: String
-    @Binding var text: String
-
-    init(_ prompt: String, text: Binding<String>) {
-        self.prompt = prompt
-        _text = text
-    }
+private struct SidebarRuntimeStatus: View {
+    @ObservedObject var model: AppModel
 
     var body: some View {
-        HStack(spacing: 7) {
-            Image(systemName: "magnifyingglass")
+        VStack(alignment: .leading, spacing: 4) {
+            StatusPill(text: status.title, color: status.color)
+            Text(detail)
+                .font(.caption2)
                 .foregroundStyle(.secondary)
-            TextField(prompt, text: $text)
-                .textFieldStyle(.plain)
-            if !text.isEmpty {
-                Button {
-                    text = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.tertiary)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.bar)
+        .overlay(alignment: .top) { Divider() }
+    }
+
+    private var status: (title: String, color: Color) {
+        if model.collectionPaused { return ("Collection paused", .secondary) }
+        if model.degradedMessage != nil { return ("Needs attention", .orange) }
+        if model.liveCollectorStatus.mode == .stopped { return ("Starting collector", .secondary) }
+        if model.isRecordingPending { return ("Recording evidence", .blue) }
+        if model.isAnyCollectionActive { return ("Syncing evidence", .blue) }
+        if model.isSummarizing { return ("Writing summary", .purple) }
+        return ("Up to date", .green)
+    }
+
+    private var detail: String {
+        if model.liveCollectorStatus.pendingPathCount > 0 {
+            let count = model.liveCollectorStatus.pendingPathCount
+            return "\(count) repository scope\(count == 1 ? "" : "s") pending"
+        }
+        if let date = model.latestSuccessfulCollectionAt {
+            return "Updated \(date.formatted(.relative(presentation: .named)))"
+        }
+        return "Waiting for the first collection"
+    }
+}
+
+private struct AppStatusBanner: View {
+    let message: String
+    let canDismiss: Bool
+    let review: () -> Void
+    let dismiss: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange)
+            Text(message)
+                .font(.caption)
+                .lineLimit(2)
+            Spacer()
+            Button("Review") { review() }
+                .buttonStyle(.link)
+            if canDismiss {
+                Button(action: dismiss) {
+                    Image(systemName: "xmark")
                 }
-                .buttonStyle(.plain)
-                .help("Clear search")
+                .buttonStyle(.borderless)
+                .help("Dismiss")
             }
         }
-        .padding(.horizontal, 9)
-        .frame(height: 28)
-        .background(Color.primary.opacity(0.065), in: RoundedRectangle(cornerRadius: 7))
-        .overlay {
-            RoundedRectangle(cornerRadius: 7)
-                .stroke(Color.primary.opacity(0.09), lineWidth: 1)
-        }
+        .padding(.horizontal, 14)
+        .frame(minHeight: 38)
+        .background(Color.orange.opacity(0.1))
+        .overlay(alignment: .bottom) { Divider() }
     }
 }
 
@@ -1152,8 +1257,9 @@ private struct StateBadge: View {
 
 private struct SummaryOverviewCard: View {
     let summary: WorkSummary
+    let provenance: SummaryProvenancePresentation
     let copy: (String) -> Void
-    @State private var expanded = true
+    @State private var expanded = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1164,8 +1270,7 @@ private struct SummaryOverviewCard: View {
                     StateBadge(state: summary.state.rawValue)
                 }
                 Spacer()
-                Text(summary.provider?.rawValue.capitalized ?? "Local")
-                    .font(.caption).foregroundStyle(.secondary)
+                SummaryProvenanceBadge(provenance: provenance)
                 Button {
                     expanded.toggle()
                 } label: {
@@ -1198,6 +1303,8 @@ private struct SummaryOverviewCard: View {
                     }
                 }
             }
+            Label(SummaryCoveragePresentation.label(summary.coverage), systemImage: "list.bullet.rectangle")
+                .font(.caption).foregroundStyle(.secondary)
         }
         .padding(.vertical, 10)
     }
@@ -1269,9 +1376,9 @@ struct SettingsView: View {
                         .font(.caption).foregroundStyle(.secondary)
                     }
                     Spacer()
-                    CapabilityPill(
+                    StatusPill(
                         text: model.evidenceQuality.state == .healthy ? "Healthy" : "Degraded",
-                        ready: model.evidenceQuality.state == .healthy)
+                        color: model.evidenceQuality.state == .healthy ? .green : .orange)
                 }
                 ForEach(model.evidenceQuality.issues, id: \.id) { issue in
                     VStack(alignment: .leading, spacing: 2) {
@@ -1289,7 +1396,9 @@ struct SettingsView: View {
                         HStack {
                             Text(source.surface)
                             Spacer()
-                            CapabilityPill(text: humanState(source.state.rawValue), ready: source.state == .available)
+                            StatusPill(
+                                text: humanState(source.state.rawValue),
+                                color: sourceColor(source.state))
                         }
                         Text(source.location).font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
                         Text("\(source.importedRecordCount) \(source.family.capitalized) records in ledger")
@@ -1311,10 +1420,47 @@ struct SettingsView: View {
             }
             SwiftUI.Section("Repository roots") {
                 ForEach(model.roots, id: \.id) { root in
-                    LabeledContent(root.displayName, value: root.canonicalPath)
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack {
+                            Text(root.displayName)
+                            Spacer()
+                            StatusPill(
+                                text: root.isEnabled ? "Enabled" : "Disabled",
+                                color: root.isEnabled ? .green : .secondary)
+                        }
+                        Text(root.canonicalPath)
+                            .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                        HStack(spacing: 8) {
+                            Text(
+                                root.lastScannedAt.map {
+                                    "Scanned \($0.formatted(date: .abbreviated, time: .shortened))"
+                                } ?? "Not scanned yet")
+                            if !root.excludedPaths.isEmpty {
+                                Text("· \(root.excludedPaths.count) exclusions")
+                            }
+                        }
+                        .font(.caption2).foregroundStyle(.tertiary)
+                    }
+                    .padding(.vertical, 3)
                 }
             }
         }.formStyle(.grouped)
+    }
+
+    private func sourceColor(_ state: CapabilityState) -> Color {
+        switch state {
+        case .available: .green
+        case .degraded, .permissionDenied: .orange
+        case .unsupported, .notFound: .secondary
+        }
+    }
+
+    private func authenticationColor(_ state: AuthenticationState) -> Color {
+        switch state {
+        case .ready: .green
+        case .unknown: .orange
+        case .unavailable, .notInstalled: .secondary
+        }
     }
 
     private var summariesView: some View {
@@ -1331,7 +1477,9 @@ struct SettingsView: View {
                     Text("Claude").tag(ProviderSelectionMode.claude)
                     Text("Local only").tag(ProviderSelectionMode.localOnly)
                 }
-                LabeledContent("Effective provider", value: model.effectiveProvider?.rawValue.capitalized ?? "Local only")
+                LabeledContent(
+                    "Effective provider",
+                    value: model.effectiveProvider?.rawValue.capitalized ?? "Local fallback")
                 Toggle(
                     "Use AI for automatic summaries",
                     isOn: Binding(
@@ -1348,9 +1496,9 @@ struct SettingsView: View {
                             }
                         }
                         Spacer()
-                        CapabilityPill(
+                        StatusPill(
                             text: humanState(provider.authentication.rawValue),
-                            ready: provider.authentication == .ready)
+                            color: authenticationColor(provider.authentication))
                         Button("Test") { Task { await model.testProvider(provider.id) } }
                             .disabled(provider.executablePath == nil || model.isSummarizing)
                         if provider.id == .claude, provider.authentication == .unavailable {
@@ -1468,24 +1616,23 @@ struct SettingsView: View {
                 .font(.caption).foregroundStyle(.secondary)
             }
             SwiftUI.Section("Recent runs") {
-                if model.reportRuns.isEmpty {
-                    Text("No model or deterministic report runs yet.").foregroundStyle(.secondary)
+                if recentGenerationRuns.isEmpty {
+                    Text("No summary or report runs yet.").foregroundStyle(.secondary)
                 }
-                ForEach(model.reportRuns.prefix(12)) { run in
-                    HStack {
-                        VStack(alignment: .leading) {
-                            Text(run.recipeID.rawValue.replacingOccurrences(of: "-", with: " ").capitalized)
-                            Text(run.effectiveProvider?.rawValue ?? "Local renderer")
-                                .font(.caption).foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Text(humanState(run.state.rawValue)).foregroundStyle(run.state == .failed ? .red : .secondary)
-                        Text((run.usage.knownTokenTotal ?? 0).formatted() + " tokens")
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
+                ForEach(recentGenerationRuns.prefix(16)) { run in
+                    GenerationRunRow(run: run)
                 }
             }
         }.formStyle(.grouped)
+    }
+
+    private var recentGenerationRuns: [GenerationRunPresentation] {
+        let templateNames = Dictionary(
+            uniqueKeysWithValues: model.reportTemplates.map { ($0.id, $0.recipe.name) })
+        return GenerationRunPresentation.merge(
+            summaries: model.summaryRuns,
+            reports: model.reportRuns,
+            templateNames: templateNames)
     }
 
     private var weeklyAllowanceBinding: Binding<Int> {
@@ -1506,6 +1653,22 @@ struct SettingsView: View {
         Form {
             SwiftUI.Section("Collection") {
                 LabeledContent("Status", value: collectionStatus)
+                LabeledContent(
+                    "Last successful update",
+                    value: model.latestSuccessfulCollectionAt?.formatted(date: .abbreviated, time: .shortened)
+                        ?? "Not yet")
+                if model.liveCollectorStatus.pendingPathCount > 0 || model.liveCollectorStatus.pendingTriggerCount > 0 {
+                    LabeledContent(
+                        "Pending work",
+                        value:
+                            "\(model.liveCollectorStatus.pendingPathCount) repository scopes · \(model.liveCollectorStatus.pendingTriggerCount) filesystem signals"
+                    )
+                }
+                if let median = model.liveCollectorStatus.medianLatencySeconds {
+                    LabeledContent(
+                        "Typical live latency",
+                        value: "\(median.formatted(.number.precision(.fractionLength(1)))) seconds")
+                }
                 Toggle("Launch Trackify at login", isOn: $launchAtLogin)
                     .onChange(of: launchAtLogin) { _, value in model.setLaunchAtLogin(value) }
                 Toggle(
@@ -1515,7 +1678,19 @@ struct SettingsView: View {
                         set: { value in Task { await model.setCollectionPaused(value) } }))
                 LabeledContent("Reconciliation", value: "Every 30 minutes")
                 LabeledContent("Evidence", value: "Local only")
-                Button("Sync now") { Task { await model.collectNow() } }.disabled(model.isAnyCollectionActive)
+                Button {
+                    Task { await model.collectNow() }
+                } label: {
+                    if model.isAnyCollectionActive {
+                        HStack {
+                            ProgressView().controlSize(.small)
+                            Text("Syncing…")
+                        }
+                    } else {
+                        Text("Sync now")
+                    }
+                }
+                .disabled(model.isAnyCollectionActive)
             }
             SwiftUI.Section("Updates") {
                 Toggle(
@@ -1547,21 +1722,133 @@ struct SettingsView: View {
     private var collectionStatus: String {
         if model.collectionPaused { return "Paused" }
         if model.degradedMessage != nil { return "Needs attention" }
+        if model.liveCollectorStatus.mode == .stopped { return "Starting" }
         if model.isRecordingPending { return "Recording" }
         if model.isAnyCollectionActive { return "Syncing" }
         return "Up to date"
     }
 }
 
-private struct CapabilityPill: View {
-    let text: String
-    let ready: Bool
-    var body: some View {
-        HStack(spacing: 5) {
-            Circle().fill(ready ? Color.green : Color.secondary).frame(width: 7, height: 7)
-            Text(text)
+struct GenerationRunPresentation: Identifiable, Equatable {
+    enum Kind: Equatable { case summary, report }
+
+    let id: String
+    let kind: Kind
+    let title: String
+    let provider: String
+    let state: ReportRunState
+    let usage: String
+    let queuedAt: Date
+    let failureDetail: String?
+
+    static func merge(
+        summaries: [SummaryRun],
+        reports: [ReportRun],
+        templateNames: [RecipeID: String]
+    ) -> [Self] {
+        let summaryItems = summaries.map { run in
+            Self(
+                id: "summary:\(run.id.rawValue)",
+                kind: .summary,
+                title: summaryTitle(run.kind),
+                provider: providerTitle(
+                    effective: run.effectiveProvider,
+                    requested: run.requestedProvider,
+                    selection: run.selectionMode,
+                    model: run.effectiveModel ?? run.requestedModel),
+                state: run.state,
+                usage: usageTitle(
+                    usage: run.usage,
+                    estimatedInputTokens: run.estimatedInputTokens,
+                    effectiveProvider: run.effectiveProvider),
+                queuedAt: run.queuedAt,
+                failureDetail: run.failureDetail)
         }
-        .font(.caption)
+        let reportItems = reports.map { run in
+            Self(
+                id: "report:\(run.id.rawValue)",
+                kind: .report,
+                title: templateNames[run.recipeID] ?? run.recipeID.rawValue.replacingOccurrences(of: "-", with: " ").capitalized,
+                provider: providerTitle(
+                    effective: run.effectiveProvider,
+                    requested: run.requestedProvider,
+                    selection: run.selectionMode,
+                    model: run.effectiveModel ?? run.requestedModel),
+                state: run.state,
+                usage: usageTitle(
+                    usage: run.usage,
+                    estimatedInputTokens: run.estimatedInputTokens ?? 0,
+                    effectiveProvider: run.effectiveProvider),
+                queuedAt: run.queuedAt,
+                failureDetail: run.failureDetail)
+        }
+        return (summaryItems + reportItems).sorted { $0.queuedAt > $1.queuedAt }
+    }
+
+    private static func summaryTitle(_ kind: WorkSummaryKind) -> String {
+        switch kind {
+        case .segment: "Automatic half-hour summary"
+        case .current: "Current-work rollup"
+        case .day: "Daily summary"
+        }
+    }
+
+    private static func providerTitle(
+        effective: SummaryProviderID?,
+        requested: SummaryProviderID?,
+        selection: ProviderSelectionMode,
+        model: String?
+    ) -> String {
+        if let provider = effective {
+            let base = provider.rawValue.capitalized
+            return model.map { "\(base) · \($0)" } ?? base
+        }
+        if selection == .localOnly { return "Local" }
+        if let requested { return "\(requested.rawValue.capitalized) requested" }
+        return humanState(selection.rawValue)
+    }
+
+    private static func usageTitle(
+        usage: ProviderUsage,
+        estimatedInputTokens: Int,
+        effectiveProvider: SummaryProviderID?
+    ) -> String {
+        if let measured = usage.knownTokenTotal, measured > 0 {
+            return "\(measured.formatted()) tokens"
+        }
+        if effectiveProvider != nil, estimatedInputTokens > 0 {
+            return "~\(estimatedInputTokens.formatted()) input tokens"
+        }
+        return effectiveProvider == nil ? "No AI usage" : "Usage unavailable"
+    }
+}
+
+private struct GenerationRunRow: View {
+    let run: GenerationRunPresentation
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: run.kind == .summary ? "sparkles" : "doc.text")
+                .foregroundStyle(run.kind == .summary ? Color.purple : Color.blue)
+                .frame(width: 20)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(run.title).font(.callout.weight(.medium))
+                Text("\(run.provider) · \(run.usage)")
+                    .font(.caption).foregroundStyle(.secondary)
+                if run.state == .failed, let detail = run.failureDetail {
+                    Text(detail).font(.caption2).foregroundStyle(.red).lineLimit(2)
+                }
+            }
+            Spacer()
+            VStack(alignment: .trailing, spacing: 3) {
+                Text(humanState(run.state.rawValue))
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(run.state == .failed ? .red : .secondary)
+                Text(run.queuedAt, format: .dateTime.month(.abbreviated).day().hour().minute())
+                    .font(.caption2).foregroundStyle(.tertiary)
+            }
+        }
+        .padding(.vertical, 3)
     }
 }
 
@@ -1573,7 +1860,7 @@ private struct UsageRow: View {
             HStack {
                 Text(title).fontWeight(.medium)
                 Spacer()
-                Text("\(usage.runs) runs")
+                Text("\(usage.runs) \(usage.runs == 1 ? "run" : "runs")")
             }
             let tokens = usage.inputTokens + usage.cachedInputTokens + usage.outputTokens + usage.reasoningTokens
             Text("\(tokens.formatted()) tokens · \(usage.durationSeconds.formatted(.number.precision(.fractionLength(1))))s")
